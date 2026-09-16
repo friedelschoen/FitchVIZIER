@@ -1,0 +1,22 @@
+[package]
+name = "lsp"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "fitchlsp"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+comfy-table = "7.2.1"
+fitch-proof = { path = "../fitch-proof" }
+tokio = {version="1.53.1", features = ["full"] } 
+tower-lsp-server = "0.23.0"
+
+[profile.release]
+lto = true
+opt-level = "z"
+strip = true
+panic = "abort"
