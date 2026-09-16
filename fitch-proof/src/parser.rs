@@ -9,17 +9,12 @@ type LToken = WithSpan<Token>;
 
 /// This function takes a string slice and tries to parse it as a full proof.
 ///
-/// If it succeeds, a vector of [LProofNode]s is returned. If it does not succeed, then a nice error
+/// If it succeeds, a vector of [LParsedProofNode]s is returned. If it does not succeed, then a nice error
 /// message is returned.
 ///
 /// For a specification of the grammar that is used for parsing, see the documentation of the
 /// functions [parse_proof_line] and [parse_logical_expr].
-pub fn parse_fitch_proof(proof: &str) -> Result<Vec<LProofNode>, String> {
-    parse_fitch_proof_diagnostic(proof).map_err(|diagnostic| diagnostic.message)
-}
-
-pub(crate) fn parse_fitch_proof_diagnostic(proof: &str) -> Result<Vec<LProofNode>, Diagnostic> {
-    let mut last_line_num = 0;
+pub fn parse_fitch_proof(proof: &str) -> Result<Vec<LParsedProofNode>, Diagnostic> {
     proof
         .lines()
         .enumerate()
@@ -28,23 +23,8 @@ pub(crate) fn parse_fitch_proof_diagnostic(proof: &str) -> Result<Vec<LProofNode
                 return None;
             }
             Some(match lex_with_line(line, Some(idx + 1)) {
-                Ok(toks) => match parse_proof_line(&toks) {
-                    Ok(node) => {
-                        last_line_num = node.line_num().unwrap_or(last_line_num);
-                        Ok(node)
-                    }
-                    Err(err) => Err(err),
-                },
-                Err(err) => Err(Diagnostic::new(
-                    format!("lexer failure near line {}: {}", last_line_num + 1, err.message),
-                    Some(match err.span {
-                        Some(loc) => loc,
-                        None => Span::new(
-                            Location::new(None, idx + 1, 0),
-                            Location::new(None, idx + 1, line.len()),
-                        ),
-                    }),
-                )),
+                Ok(toks) => parse_proof_line(&toks),
+                Err(err) => Err(err),
             })
         })
         .collect()
@@ -167,6 +147,7 @@ enum Token {
     Not,
     Bottom,
     Comma,
+    Dot,
     Equals,
     Number(usize),
     ConseqVertBar(usize),
@@ -204,6 +185,7 @@ fn lex_with_line(input: &str, line_number: Option<usize>) -> Result<Vec<LToken>,
             '\u{2194}' => toks.push(WithSpan::new(Token::Bicond, Span::new(start, pos.clone()))),
             '!' | '\u{00AC}' => toks.push(WithSpan::new(Token::Not, Span::new(start, pos.clone()))),
             ',' => toks.push(WithSpan::new(Token::Comma, Span::new(start, pos.clone()))),
+            '.' => toks.push(WithSpan::new(Token::Dot, Span::new(start, pos.clone()))),
             '=' => toks.push(WithSpan::new(Token::Equals, Span::new(start, pos.clone()))),
             //a variable name begins with a letter and contains only other letters
             //TODO: consider using c.is_ascii_alphanumeric())
@@ -237,7 +219,7 @@ fn lex_with_line(input: &str, line_number: Option<usize>) -> Result<Vec<LToken>,
                     Ok(n) if n <= 999_999_999 => {
                         toks.push(WithSpan::new(Token::Number(n), Span::new(start, pos.clone())))
                     }
-                    _ => return Err(Diagnostic::new(err, Some(Span::new(start, pos.clone())))),
+                    _ => return Err(Diagnostic::new(err, Span::new(start, pos.clone()))),
                 }
             }
             '|' => {
@@ -266,7 +248,7 @@ fn lex_with_line(input: &str, line_number: Option<usize>) -> Result<Vec<LToken>,
             _ => {
                 let mut err: String = "invalid character found: ".to_owned();
                 err.push(ch);
-                return Err(Diagnostic::new(err, Some(Span::new(start, pos.clone()))));
+                return Err(Diagnostic::new(err, Span::new(start, pos.clone())));
             }
         }
     }
@@ -286,7 +268,7 @@ fn parse_logical_expr(toks: &[LToken]) -> Result<LWff, Diagnostic> {
     if toks.is_empty() {
         return Err(Diagnostic::new(
             "parse_logical_expression: no tokens to parse".to_string(),
-            None,
+            Span::dummy(),
         ));
     }
     let from_span = toks.first().unwrap().span();
@@ -298,13 +280,13 @@ fn parse_logical_expr(toks: &[LToken]) -> Result<LWff, Diagnostic> {
         } else {
             return Err(Diagnostic::new(
                 format!("failed to parse logical expression"),
-                Some(Span::cover(from_span, to_span)),
+                Span::cover(from_span, to_span),
             ));
         }
     } else {
         return Err(Diagnostic::new(
             format!("failed to parse logical expression"),
-            Some(Span::cover(from_span, to_span)),
+            Span::cover(from_span, to_span),
         ));
     }
 }
@@ -324,13 +306,13 @@ fn parse_e1(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
         // <E1> => <E2> implies <E2>
         Token::Implies => {
             let (rhs, rem_rest) = parse_e2(rem.get(1..)?)?;
-            let span = consumed_span(toks, rem_rest)?;
+            let span = consumed_span(toks, rem_rest);
             Some((WithSpan::new(Wff::Implies(Box::new(first), Box::new(rhs)), span), rem_rest))
         }
         // <E1> => <E2> bicond <E2>
         Token::Bicond => {
             let (rhs, rem_rest) = parse_e2(rem.get(1..)?)?;
-            let span = consumed_span(toks, rem_rest)?;
+            let span = consumed_span(toks, rem_rest);
             Some((WithSpan::new(Wff::Bicond(Box::new(first), Box::new(rhs)), span), rem_rest))
         }
         // <E1> => <E2> and <E2> [and <E2>]
@@ -342,7 +324,7 @@ fn parse_e1(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
                 rem = rest;
             }
             // it is safe to unwrap here because we constructed `conjuncts` as non-empty
-            let span = consumed_span(toks, rem)?;
+            let span = consumed_span(toks, rem);
             Some((WithSpan::new(Wff::And(conjuncts), span), rem))
         }
         // <E1> => <E2> or <E2> [or <E2>]
@@ -354,7 +336,7 @@ fn parse_e1(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
                 rem = rest;
             }
             // it is safe to unwrap here because we constructed `disjuncts` as non-empty
-            let span = consumed_span(toks, rem)?;
+            let span = consumed_span(toks, rem);
             Some((WithSpan::new(Wff::Or(disjuncts), span), rem))
         }
         // there are still remaining tokens left, but we cannot parse further
@@ -373,7 +355,7 @@ fn parse_e2(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
     if let Some((term1, rem_toks1)) = parse_term(toks) {
         if matches!(rem_toks1.first()?.value(), Token::Equals) {
             if let Some((term2, rem_toks2)) = parse_term(rem_toks1.get(1..)?) {
-                let span = consumed_span(toks, rem_toks2)?;
+                let span = consumed_span(toks, rem_toks2);
                 return Some((WithSpan::new(Wff::Equals(term1, term2), span), rem_toks2));
             }
         }
@@ -382,14 +364,17 @@ fn parse_e2(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
     None
 }
 
-fn span_of_tokens(toks: &[LToken]) -> Option<Span> {
-    Some(Span::cover(toks.first()?.span(), toks.last()?.span()))
+fn span_of_tokens(toks: &[LToken]) -> Span {
+    let first = toks.first().expect("list cannot be empty");
+    let last = toks.first().expect("list cannot be empty");
+
+    Span::cover(first.span(), last.span())
 }
 
-fn consumed_span(toks: &[LToken], rem_toks: &[LToken]) -> Option<Span> {
-    let consumed = toks.len().checked_sub(rem_toks.len())?;
+fn consumed_span(toks: &[LToken], rem_toks: &[LToken]) -> Span {
+    let consumed = toks.len().checked_sub(rem_toks.len()).expect("list cannot be empty");
     if consumed == 0 {
-        return None;
+        return Span::dummy();
     }
 
     span_of_tokens(&toks[..consumed])
@@ -403,7 +388,7 @@ fn parse_e3(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
         // check if the name starts with a capital letter
         Token::Name(name) if name.chars().next()?.is_uppercase() => {
             if let Some((terms, rem_toks)) = parse_arg_list(&toks[1..]) {
-                let span = consumed_span(toks, rem_toks)?;
+                let span = consumed_span(toks, rem_toks);
                 Some((WithSpan::new(Wff::PredApp(name.to_string(), terms), span), rem_toks))
             } else {
                 Some((
@@ -417,7 +402,7 @@ fn parse_e3(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
             let (expr, rem_toks) = parse_e1(&toks[1..])?;
             if matches!(rem_toks.first()?.value(), Token::RPar) {
                 let rem_toks = &rem_toks[1..];
-                let span = consumed_span(toks, rem_toks)?;
+                let span = consumed_span(toks, rem_toks);
                 let WithSpan {
                     value,
                     ..
@@ -431,14 +416,14 @@ fn parse_e3(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
         Token::Forall => {
             let (var, rem_toks1) = parse_name(&toks[1..])?;
             let (expr, rem_toks2) = parse_e3(rem_toks1)?;
-            let span = consumed_span(toks, rem_toks2)?;
+            let span = consumed_span(toks, rem_toks2);
             Some((WithSpan::new(Wff::Forall(var.to_owned(), Box::new(expr)), span), rem_toks2))
         }
         // <E3> => exists <VarName> <E3>
         Token::Exists => {
             let (var, rem_toks1) = parse_name(&toks[1..])?;
             let (expr, rem_toks2) = parse_e3(rem_toks1)?;
-            let span = consumed_span(toks, rem_toks2)?;
+            let span = consumed_span(toks, rem_toks2);
             Some((WithSpan::new(Wff::Exists(var.to_owned(), Box::new(expr)), span), rem_toks2))
         }
         // <E3> => bottom
@@ -446,7 +431,7 @@ fn parse_e3(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
         // <E3> => not <E3>
         Token::Not => {
             let (expr, rem_toks) = parse_e3(&toks[1..])?;
-            let span = consumed_span(toks, rem_toks)?;
+            let span = consumed_span(toks, rem_toks);
             Some((WithSpan::new(Wff::Not(Box::new(expr)), span), rem_toks))
         }
         _ => None,
@@ -460,7 +445,7 @@ fn parse_term(toks: &[LToken]) -> Option<(LTerm, &[LToken])> {
 
     match parse_arg_list(rem_toks) {
         Some((terms, rem_toks)) => {
-            let span = consumed_span(toks, rem_toks)?;
+            let span = consumed_span(toks, rem_toks);
             Some((WithSpan::new(Term::FuncApp(name.to_string(), terms), span), rem_toks))
         }
         None => {
@@ -561,9 +546,9 @@ fn parse_arg_list(toks: &[LToken]) -> Option<(Vec<LTerm>, &[LToken])> {
 /// can just be done normally from left to right.
 ///
 /// if the resulting Diagnostic has span: None, then we take it that the whole line is at fault
-fn parse_proof_line(toks: &[LToken]) -> Result<LProofNode, Diagnostic> {
+fn parse_proof_line(toks: &[LToken]) -> Result<LParsedProofNode, Diagnostic> {
     if toks.is_empty() {
-        return Err(Diagnostic::new("proof line appears to be empty".to_string(), None));
+        return Err(Diagnostic::new("proof line appears to be empty".to_string(), Span::dummy()));
     }
 
     let has_colon = toks.iter().any(|t| matches!(t.value(), Token::Colon));
@@ -582,20 +567,27 @@ fn parse_proof_line(toks: &[LToken]) -> Result<LProofNode, Diagnostic> {
 }
 
 /// Assumes that `toks` is non-empty
-fn parse_line_with_justification(toks: &[LToken]) -> Result<LProofNode, Diagnostic> {
+fn parse_line_with_justification(toks: &[LToken]) -> Result<LParsedProofNode, Diagnostic> {
     let number_tok = toks.first();
     let depth_tok = toks.get(1);
 
-    let Some(Token::Number(line_num)) = number_tok.map(|t| t.value()) else {
-        return Err(Diagnostic::new(
-            "a proof line with justification must start with a line number".to_string(),
-            None,
-        ));
+    let line_num = match number_tok.map(|t| t.value()) {
+        Some(Token::Number(line_num)) => {
+            WithSpan::new(LineNumber::Explicit(*line_num), number_tok.unwrap().span.clone())
+        }
+        Some(Token::Dot) => WithSpan::new(LineNumber::Auto, number_tok.unwrap().span.clone()),
+
+        _ => {
+            return Err(Diagnostic::new(
+                "a proof line with justification must start with a line number".to_string(),
+                number_tok.map(WithSpan::span).unwrap_or(&Span::dummy()).clone(),
+            ))
+        }
     };
     let Some(Token::ConseqVertBar(depth)) = depth_tok.map(|t| t.value()) else {
         return Err(Diagnostic::new(
             "after the line number, there should be at least one vertical bar".to_string(),
-            depth_tok.map(|t| t.span().clone()),
+            depth_tok.map(WithSpan::span).unwrap_or(&Span::dummy()).clone(),
         ));
     };
 
@@ -607,7 +599,8 @@ fn parse_line_with_justification(toks: &[LToken]) -> Result<LProofNode, Diagnost
     };
 
     if colon_index < 4 {
-        return Err(Diagnostic::new("failed to parse proof line. The proof line contains a colon, but this colon appears so early that it cannot possibly be a justification".to_string(), ot.map(|t| t.span().clone())));
+        return Err(Diagnostic::new("failed to parse proof line. The proof line contains a colon, but this colon appears so early that it cannot possibly be a justification".to_string(), 
+            ot.map(WithSpan::span).unwrap_or(&Span::dummy()).clone()));
     }
 
     let (before_just, just_slice) = if let Token::Name(name) = toks[colon_index - 1].value() {
@@ -615,21 +608,21 @@ fn parse_line_with_justification(toks: &[LToken]) -> Result<LProofNode, Diagnost
             "Reit" => (&toks[..colon_index - 1], &toks[colon_index - 1..]),
             "Intro" | "Elim" => (&toks[..colon_index - 2], &toks[colon_index - 2..]),
             _ => {
-                return Err(Diagnostic::new(format!("failed to parse justification. Expected 'Reit', 'Intro' or 'Elim', found '{name}'. Note that capitalization matters!"), Some(toks[colon_index - 1].span().clone())));
+                return Err(Diagnostic::new(format!("failed to parse justification. Expected 'Reit', 'Intro' or 'Elim', found '{name}'. Note that capitalization matters!"), toks[colon_index - 1].span().clone()));
             }
         }
     } else {
-        return Err(Diagnostic::new("sentence contains a colon, which was expected to be preceded by 'Intro', 'Elim' or 'Reit', but the parser did not find any of these.".to_string(), Some(toks[colon_index - 1].span().clone())));
+        return Err(Diagnostic::new("sentence contains a colon, which was expected to be preceded by 'Intro', 'Elim' or 'Reit', but the parser did not find any of these.".to_string(),toks[colon_index - 1].span().clone()));
     };
 
     let sentence_tokens = before_just.get(2..).unwrap_or(&[]);
     let sentence = parse_logical_expr(sentence_tokens)?;
     let justification = parse_justification(just_slice)?;
 
-    let node_span = span_of_tokens(toks).expect("parse_line_with_justification requires tokens");
+    let node_span = span_of_tokens(toks);
     Ok(WithSpan::new(
-        ProofNode::Numbered(NumberedLine {
-            line_num: *line_num,
+        ParsedProofNode::Numbered(ParsedNumberedLine {
+            line_num,
             depth: *depth,
             sentence: Some(sentence),
             justification: Some(justification),
@@ -642,7 +635,7 @@ fn parse_line_with_justification(toks: &[LToken]) -> Result<LProofNode, Diagnost
 /// Assumes that `toks` is non-empty
 /// if the resulting Diagnostic has span: None, then we take it that the whole line is at fault
 /// TODO: more precise error span for the boxed constants case
-fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagnostic> {
+fn parse_line_without_justification(toks: &[LToken]) -> Result<LParsedProofNode, Diagnostic> {
     // Now we must be in one if these cases:
     //  1) opening a new scope
     //     <num> '|' { '|' } <E1>
@@ -654,12 +647,18 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
     //     '|' { '|' }
     let first = toks.first().unwrap();
     match first.value() {
-        Token::Number(line_num) => {
+        Token::Number(_) | Token::Dot => {
+            let line_num = match first.value() {
+                Token::Number(nr) => WithSpan::new(LineNumber::Explicit(*nr), first.span.clone()),
+                Token::Dot => WithSpan::new(LineNumber::Auto, first.span.clone()),
+                _ => unreachable!(),
+            };
+
             // we must be in the case 1 and 2
             let Some(Token::ConseqVertBar(depth)) = toks.get(1).map(|x| x.value()) else {
                 return Err(Diagnostic::new(
                     "after the line number, there should be at least one vertical bar".to_string(),
-                    Some(first.span().clone()),
+                    first.span().clone(),
                 ));
             };
 
@@ -681,20 +680,20 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
                 let Token::Name(name) = name_tok.value() else {
                     return Err(Diagnostic::new(
                         "boxed constants must be names".to_string(),
-                        Some(name_span.clone()),
+                        name_span.clone(),
                     ));
                 };
                 if !name.chars().next().unwrap_or('U').is_ascii_lowercase() {
-                    return Err(Diagnostic::new("a boxed constant must be a constant; it should start with a lowercase letter".to_string(), Some(name_span.clone())));
+                    return Err(Diagnostic::new("a boxed constant must be a constant; it should start with a lowercase letter".to_string(), name_span.clone()));
                 }
 
                 const_between = Some(WithSpan::new(Term::Atomic(name.to_string()), name_span));
                 // the line introduces a boxed constant and nothing else
                 if toks.len() == 5 {
-                    let node_span = span_of_tokens(toks).expect("tokens is non-empty");
+                    let node_span = span_of_tokens(toks);
                     return Ok(WithSpan::new(
-                        ProofNode::Numbered(NumberedLine {
-                            line_num: *line_num,
+                        ParsedProofNode::Numbered(ParsedNumberedLine {
+                            line_num,
                             depth: *depth,
                             sentence: None,
                             justification: None,
@@ -729,10 +728,10 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
                 ));
             }
 
-            let node_span = span_of_tokens(toks).expect("tokens is non-empty");
+            let node_span = span_of_tokens(toks);
             Ok(WithSpan::new(
-                ProofNode::Numbered(NumberedLine {
-                    line_num: *line_num,
+                ParsedProofNode::Numbered(ParsedNumberedLine {
+                    line_num,
                     depth: *depth,
                     sentence: wff,
                     justification: None,
@@ -746,9 +745,9 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
             let rest = &toks[1..];
             // if the line contains only dashes, then its a Fitch Bar
             if rest.iter().all(|t| matches!(t.value(), Token::Dash)) && !rest.is_empty() {
-                let span = span_of_tokens(toks).expect("tokens is non-empty");
+                let span = span_of_tokens(toks);
                 Ok(WithSpan::new(
-                    ProofNode::FitchBar {
+                    ParsedProofNode::FitchBar {
                         depth: *depth,
                     },
                     span,
@@ -756,7 +755,7 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
             // otherwise its an empty line
             } else if rest.is_empty() {
                 Ok(WithSpan::new(
-                    ProofNode::Empty {
+                    ParsedProofNode::Empty {
                         depth: *depth,
                     },
                     first.span().clone(),
@@ -780,18 +779,13 @@ fn parse_line_without_justification(toks: &[LToken]) -> Result<LProofNode, Diagn
 /// [parse_proof_line].
 fn parse_justification(toks: &[LToken]) -> Result<LJustification, Diagnostic> {
     let justification = parse_justification_tokens(toks)?;
-    let span =
-        span_of_tokens(toks).unwrap_or_else(|| Span::new(Location::dummy(), Location::dummy()));
+    let span = span_of_tokens(toks);
     Ok(WithSpan::new(justification, span))
 }
 
 fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnostic> {
     fn token_at(toks: &[LToken], index: usize) -> Option<&WithSpan<Token>> {
         return toks.get(index);
-    }
-
-    fn diagnostic_span(toks: &[LToken]) -> Option<Span> {
-        span_of_tokens(toks)
     }
 
     // We determine the justification (and whether it is syntactically valid) by the first four tokens
@@ -826,10 +820,10 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     if let Some(WithSpan{value:Token::Number(next_num), span: next_num_span}) = token_at(toks, i + 1) {
                         nums.push(LineRef{span:next_num_span.clone(), line:*next_num});
                     } else {
-                        return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                        return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
                     }
                 } else {
-                    return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                    return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
                 }
                 i += 2;
             }
@@ -846,7 +840,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
             if toks.get(4).is_none() {
                 Ok(Justification::AndElim(LineRef{span: num_span.clone(), line:*num}))
             } else {
-                return Err(Diagnostic::new("failed to parse ∧Elim justification. It should be of this form: ∧Elim:<num>".to_string(), diagnostic_span(toks)))
+                return Err(Diagnostic::new("failed to parse ∧Elim justification. It should be of this form: ∧Elim:<num>".to_string(), span_of_tokens(toks)))
             }
         }
         // "∨" "Intro" : <num>
@@ -860,7 +854,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
             if toks.get(4).is_none() {
                 return Ok(Justification::OrIntro(LineRef{span:num_span.clone(), line:*num}))
             } else {
-                return Err(Diagnostic::new("failed to parse ∨Intro justification. It should be of this form: ∨Intro:<num>".to_string(), diagnostic_span(toks)))
+                return Err(Diagnostic::new("failed to parse ∨Intro justification. It should be of this form: ∨Intro:<num>".to_string(), span_of_tokens(toks)))
             }
         }
         // "∨" "Elim" : <num> , <num>-<num> { , <num>-<num> }
@@ -876,7 +870,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
             let mut i = 4;
             if toks.get(i).is_none() {
                 // should be at least one num-range provided
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             };
             while toks.get(i).is_some() {
                 if token_at(toks, i).unwrap().value == Token::Comma {
@@ -884,7 +878,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                         || toks.get(i + 2).is_none()
                         || toks.get(i + 3).is_none()
                     {
-                        return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                        return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
                     }
                     if let (Some(WithSpan{value:Token::Number(next_num1), span:next_num1_span}), Some(WithSpan{value:Token::Dash,.. }), Some(WithSpan{value:Token::Number(next_num2), span: next_num2_span })) = (
                         token_at(toks, i + 1),
@@ -893,10 +887,10 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     ) {
                         num_pairs.push((LineRef{span: next_num1_span.clone(), line:*next_num1}, LineRef{span: next_num2_span.clone(), line: *next_num2 }));
                     } else {
-                        return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                        return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
                     }
                 } else {
-                    return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                    return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
                 }
                 i += 4;
             }
@@ -912,13 +906,13 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
         {
             let err_str = "failed to parse →Intro justification. It should be of this form: →Intro:<num>-<num>".to_string();
             if toks.len() != 6 {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
             if let (WithSpan{value:Token::Dash,..}, WithSpan{value: Token::Number(num2), span: num2_span}) = (token_at(toks, 4).unwrap(), token_at(toks, 5).unwrap())
             {
                 Ok(Justification::ImpliesIntro((LineRef{span: num1_span.clone(), line:*num1}, LineRef{span: num2_span.clone(), line: *num2 })))
             } else {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
         }
         // → "Elim" : <num>, <num>
@@ -933,13 +927,13 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                 "failed to parse →Elim justification. It should be of this form: →Elim:<num>,<num>"
                     .to_string();
             if toks.len() != 6 {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
             if let (WithSpan{value:Token::Comma,..}, WithSpan{value: Token::Number(num2), span:num2_span}) = (token_at(toks, 4).unwrap(), token_at(toks, 5).unwrap())
             {
                 return Ok(Justification::ImpliesElim(LineRef{span:num1_span.clone(), line: *num1}, LineRef{ span: num2_span.clone(), line: *num2 }))
             } else {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
         }
         // ↔ "Intro" : <num>-<num>, <num>-<num>
@@ -952,7 +946,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
         {
             let err_str = "failed to parse ↔Intro justification. It should be of this form: ↔Intro:<num>-<num>,<num>-<num>".to_string();
             if toks.len() != 10 {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
 
             if let (
@@ -969,7 +963,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                         (LineRef{ span: num1_span.clone(), line:*num1}, LineRef{span: num2_span.clone(), line:*num2 }),
                         (LineRef{ span: num3_span.clone(), line:*num3}, LineRef{span: num4_span.clone(), line:*num4 })))
             } else {
-                return Err(Diagnostic::new(err_str, diagnostic_span(toks)));
+                return Err(Diagnostic::new(err_str, span_of_tokens(toks)));
             }
         }
         // ↔ "Elim" : <num>,<num>
@@ -984,7 +978,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 6 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Comma,
@@ -1009,7 +1003,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     },
                 ))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1037,7 +1031,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 6 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Dash,
@@ -1062,7 +1056,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     },
                 )))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1095,7 +1089,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     line: *num,
                 }))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1123,7 +1117,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 6 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Comma,
@@ -1148,7 +1142,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     },
                 ))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1181,7 +1175,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     line: *num,
                 }))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1202,7 +1196,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
             if toks.len() == 2 {
                 Ok(Justification::EqualsIntro)
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1230,7 +1224,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 6 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Comma,
@@ -1255,7 +1249,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     },
                 ))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1283,7 +1277,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 6 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Dash,
@@ -1308,7 +1302,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     },
                 )))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1341,7 +1335,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     line: *num,
                 }))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1374,7 +1368,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     line: *num,
                 }))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
@@ -1402,7 +1396,7 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     .to_string();
 
             if toks.len() != 8 {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             } else if let (
                 WithSpan {
                     value: Token::Comma,
@@ -1443,14 +1437,14 @@ fn parse_justification_tokens(toks: &[LToken]) -> Result<Justification, Diagnost
                     ),
                 ))
             } else {
-                Err(Diagnostic::new(err_str, diagnostic_span(toks)))
+                Err(Diagnostic::new(err_str, span_of_tokens(toks)))
             }
         }
 
         _ => Err(Diagnostic::new(
             "failed to parse justification. Make sure that you have references where necessary, and note that the proper capitalization is 'Intro'/'Elim'/'Reit'."
                 .to_string(),
-            diagnostic_span(toks),
+            span_of_tokens(toks),
         )),
     }
 }
@@ -1461,25 +1455,28 @@ mod tests {
 
     #[test]
     fn proof_lexer_diagnostic_has_physical_span() {
-        let diagnostic = parse_fitch_proof_diagnostic("\n1 | P\n2 | P @ Reit:1").unwrap_err();
+        let diagnostic = parse_fitch_proof("\n1 | P\n2 | P @ Reit:1").unwrap_err();
 
         assert_eq!(
             diagnostic.span,
-            Some(Span::new(Location::new(None, 3, 6), Location::new(None, 3, 7),))
+            Span::new(Location::new(None, 3, 6), Location::new(None, 3, 7))
         );
         assert_eq!(diagnostic.message, "lexer failure near line 2: invalid character found: @");
-        assert_eq!(parse_fitch_proof("\n1 | P\n2 | P @ Reit:1").unwrap_err(), diagnostic.message);
+        assert_eq!(
+            parse_fitch_proof("\n1 | P\n2 | P @ Reit:1").unwrap_err().message,
+            diagnostic.message
+        );
     }
 
     #[test]
     fn proof_parser_diagnostic_uses_expression_span() {
-        let diagnostic = parse_fitch_proof_diagnostic("\n1 | P(").unwrap_err();
+        let diagnostic = parse_fitch_proof("\n1 | P(").unwrap_err();
 
         assert_eq!(
             diagnostic.span,
-            Some(Span::new(Location::new(None, 2, 4), Location::new(None, 2, 6),))
+            Span::new(Location::new(None, 2, 4), Location::new(None, 2, 6))
         );
-        assert_eq!(parse_fitch_proof("\n1 | P(").unwrap_err(), diagnostic.message);
+        assert_eq!(parse_fitch_proof("\n1 | P(").unwrap_err().message, diagnostic.message);
     }
 
     #[test]

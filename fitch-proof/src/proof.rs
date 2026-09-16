@@ -1,5 +1,5 @@
-use crate::data::*;
 use crate::loc::WithSpan;
+use crate::{data::*, Span};
 use std::collections::HashSet;
 
 /// [Scope] is a type which stores scoping information (like which lines can reference which
@@ -52,23 +52,27 @@ impl Proof {
             ) {
                 return Err(Diagnostic::new(
                     "internal error: proof already contains structural markers".to_owned(),
-                    None,
+                    node.span,
                 ));
             }
 
             let depth = node.value().depth();
             if depth == prev_depth + 1 {
                 normalized.push(WithSpan::new(
-                    ProofNode::SubproofOpen { depth },
+                    ProofNode::SubproofOpen {
+                        depth,
+                    },
                     node.span.clone(),
                 ));
             } else if depth + 1 == prev_depth {
                 normalized.push(WithSpan::new(
-                    ProofNode::SubproofClose { depth: prev_depth },
+                    ProofNode::SubproofClose {
+                        depth: prev_depth,
+                    },
                     node.span.clone(),
                 ));
             } else if depth != prev_depth {
-                return Err(Diagnostic::new(format!("near line {}, there is an 'indentation/scope jump' that is too big. You cannot open or close two subproofs in the same line.", last_line_num + 1), Some(node.span().clone())));
+                return Err(Diagnostic::new(format!("near line {}, there is an 'indentation/scope jump' that is too big. You cannot open or close two subproofs in the same line.", last_line_num + 1), node.span().clone()));
             }
 
             if let ProofNode::Numbered(numbered) = node.value() {
@@ -107,9 +111,7 @@ impl Proof {
     }
 
     pub fn numbered_lines(&self) -> impl Iterator<Item = &NumberedLine> {
-        self.nodes
-            .iter()
-            .filter_map(|node| node.value().as_numbered())
+        self.nodes.iter().filter_map(|node| node.value().as_numbered())
     }
 
     pub fn find_numbered_node(&self, line_num: usize) -> Option<&LProofNode> {
@@ -126,15 +128,11 @@ impl Proof {
     }
 
     pub fn last_numbered_line(&self) -> Option<&NumberedLine> {
-        self.last_numbered_node()
-            .and_then(|node| node.value().as_numbered())
+        self.last_numbered_node().and_then(|node| node.value().as_numbered())
     }
 
     pub fn last_numbered_node(&self) -> Option<&LProofNode> {
-        self.nodes
-            .iter()
-            .rev()
-            .find(|node| node.value().as_numbered().is_some())
+        self.nodes.iter().rev().find(|node| node.value().as_numbered().is_some())
     }
 
     /// This function computes the [Scope] of a proof.
@@ -163,7 +161,9 @@ impl Proof {
 
             for j in (0..idx).rev() {
                 match nodes[j].value() {
-                    ProofNode::SubproofOpen { .. } => {
+                    ProofNode::SubproofOpen {
+                        ..
+                    } => {
                         if depth > 0 {
                             depth -= 1;
                             let subproof_begin = nodes[j + 1..]
@@ -177,7 +177,9 @@ impl Proof {
                             }
                         }
                     }
-                    ProofNode::SubproofClose { .. } => {
+                    ProofNode::SubproofClose {
+                        ..
+                    } => {
                         depth += 1;
                         let subproof_end = nodes[..j]
                             .iter()
@@ -239,53 +241,63 @@ impl Proof {
         let Some(first_idx) = next_meaningful(nodes, 0) else {
             return Err(Diagnostic::new(
                 "Your proof appears to be empty.".to_owned(),
-                None,
+                Span::dummy(),
             ));
         };
 
         // a proof can start with a fitch bar or with a numbered premise
         match nodes[first_idx].value() {
-            ProofNode::FitchBar { .. } => {}
+            ProofNode::FitchBar {
+                ..
+            } => {}
             ProofNode::Numbered(line) if !line.is_inference() => {}
             _ => return Err(Diagnostic::new(
                 "Error: proof should start with premises (or Fitch bar, if there are no premises)."
                     .to_owned(),
-                Some(nodes[first_idx].span().clone()),
+                nodes[first_idx].span().clone(),
             )),
         }
 
         for i in 0..nodes.len() {
             match nodes[i].value() {
-                ProofNode::Empty { .. } => {}
+                ProofNode::Empty {
+                    ..
+                } => {}
 
                 // in HALF-well-structured proofs, a Fitch bar line may be succeeded by:
                 //  - an inference
                 //  - a premise without boxed constant (inference for which the user didn't write justification yet)
                 //  - a new subproof
                 //    and a proof must NOT end with a Fitch bar line
-                ProofNode::FitchBar { .. } => {
+                ProofNode::FitchBar {
+                    ..
+                } => {
                     let Some(next_idx) = next_meaningful(nodes, i + 1) else {
                         return Err(Diagnostic::new(
                             "The proof ends with a Fitch bar.".to_owned(),
-                            Some(nodes[i].span().clone()),
+                            nodes[i].span().clone(),
                         ));
                     };
                     match nodes[next_idx].value() {
                         ProofNode::Numbered(line) if line.is_inference() => {}
-                        ProofNode::SubproofOpen { .. } => {}
+                        ProofNode::SubproofOpen {
+                            ..
+                        } => {}
                         ProofNode::Numbered(line)
                             if !line.is_inference() && !line.introduces_boxed_constant() => {}
                         _ => {
-                            return Err(Diagnostic::new("Error: Fitch bars should be followed by either a new subproof or an inference. You might be missing a justification.".to_owned(), Some(nodes[next_idx].span().clone())));
+                            return Err(Diagnostic::new("Error: Fitch bars should be followed by either a new subproof or an inference. You might be missing a justification.".to_owned(), nodes[next_idx].span().clone()));
                         }
                     }
                 }
 
                 // in HALF-well-tructure proofs, after a subproof is opened, there must be:
                 //  - EXACTLY one numbered premise, FOLLOWED by a Fitch bar
-                ProofNode::SubproofOpen { .. } => {
+                ProofNode::SubproofOpen {
+                    ..
+                } => {
                     let Some(prem_idx) = next_meaningful(nodes, i + 1) else {
-                        return Err(Diagnostic::new("Error: this proof ends with an opened subproof in a way that should not be.".to_owned(), Some(nodes[i].span().clone())));
+                        return Err(Diagnostic::new("Error: this proof ends with an opened subproof in a way that should not be.".to_owned(), nodes[i].span().clone()));
                     };
                     match nodes[prem_idx].value() {
                         ProofNode::Numbered(line) if !line.is_inference() => {}
@@ -293,17 +305,19 @@ impl Proof {
                             return Err(Diagnostic::new(
                                 "Error: the first line on any new subproof should be a premise."
                                     .to_owned(),
-                                Some(nodes[prem_idx].span().clone()),
+                                nodes[prem_idx].span().clone(),
                             ));
                         }
                     }
                     let Some(bar_idx) = next_meaningful(nodes, prem_idx + 1) else {
-                        return Err(Diagnostic::new("Error: this proof ends with an opened subproof in a way that should not be.".to_owned(), Some(nodes[prem_idx].span().clone())));
+                        return Err(Diagnostic::new("Error: this proof ends with an opened subproof in a way that should not be.".to_owned(), nodes[prem_idx].span().clone()));
                     };
                     match nodes[bar_idx].value() {
-                        ProofNode::FitchBar { .. } => {}
+                        ProofNode::FitchBar {
+                            ..
+                        } => {}
                         _ => {
-                            return Err(Diagnostic::new("Error: a subproof should have exactly one premise, followed by a Fitch bar.".to_owned(), Some(nodes[bar_idx].span().clone())));
+                            return Err(Diagnostic::new("Error: a subproof should have exactly one premise, followed by a Fitch bar.".to_owned(), nodes[bar_idx].span().clone()));
                         }
                     }
                 }
@@ -312,15 +326,19 @@ impl Proof {
                 //  - an inference
                 //  - a premise without boxed constant (inference for which user didn't write justification yet)
                 //  - a new subproof
-                ProofNode::SubproofClose { .. } => {
+                ProofNode::SubproofClose {
+                    ..
+                } => {
                     if let Some(next_idx) = next_meaningful(nodes, i + 1) {
                         match nodes[next_idx].value() {
                             ProofNode::Numbered(line) if line.is_inference() => {}
-                            ProofNode::SubproofOpen { .. } => {}
+                            ProofNode::SubproofOpen {
+                                ..
+                            } => {}
                             ProofNode::Numbered(line)
                                 if !line.is_inference() && !line.introduces_boxed_constant() => {}
                             _ => {
-                                return Err(Diagnostic::new("Error: after closing a subproof, either you should open a new subproof or there should be an inference. Maybe you are missing some justification.".to_owned(), Some(nodes[next_idx].span().clone())));
+                                return Err(Diagnostic::new("Error: after closing a subproof, either you should open a new subproof or there should be an inference. Maybe you are missing some justification.".to_owned(), nodes[next_idx].span().clone()));
                             }
                         }
                     }
@@ -335,19 +353,25 @@ impl Proof {
                     if let Some(next_idx) = next_meaningful(nodes, i + 1) {
                         match nodes[next_idx].value() {
                             ProofNode::Numbered(next_line) if next_line.is_inference() => {}
-                            ProofNode::SubproofOpen { .. } => {}
-                            ProofNode::SubproofClose { .. } => {}
+                            ProofNode::SubproofOpen {
+                                ..
+                            } => {}
+                            ProofNode::SubproofClose {
+                                ..
+                            } => {}
                             ProofNode::Numbered(next_line)
                                 if !next_line.is_inference()
                                     && !next_line.introduces_boxed_constant() => {}
-                            ProofNode::FitchBar { .. } => {
-                                return Err(Diagnostic::new("Error: you cannot have a Fitch bar after an inference. Maybe you are giving justification for a premise?".to_owned(), Some(nodes[next_idx].span().clone())));
+                            ProofNode::FitchBar {
+                                ..
+                            } => {
+                                return Err(Diagnostic::new("Error: you cannot have a Fitch bar after an inference. Maybe you are giving justification for a premise?".to_owned(), nodes[next_idx].span().clone()));
                             }
                             ProofNode::Numbered(next_line)
                                 if !next_line.is_inference()
                                     && next_line.introduces_boxed_constant() =>
                             {
-                                return Err(Diagnostic::new("Error: a boxed constant can only be introduced in the premise of a subproof".to_owned(), Some(nodes[next_idx].span().clone())));
+                                return Err(Diagnostic::new("Error: a boxed constant can only be introduced in the premise of a subproof".to_owned(), nodes[next_idx].span().clone()));
                             }
                             _ => {}
                         }
@@ -368,17 +392,24 @@ impl Proof {
                 {
                     if let Some(next_idx) = next_meaningful(nodes, i + 1) {
                         match nodes[next_idx].value() {
-                            ProofNode::FitchBar { .. } => {}
+                            ProofNode::FitchBar {
+                                ..
+                            } => {}
                             ProofNode::Numbered(next_line)
                                 if !next_line.is_inference()
                                     && !next_line.introduces_boxed_constant() => {}
                             ProofNode::Numbered(next_line) if next_line.is_inference() => {}
-                            ProofNode::SubproofOpen { .. } | ProofNode::SubproofClose { .. } => {}
+                            ProofNode::SubproofOpen {
+                                ..
+                            }
+                            | ProofNode::SubproofClose {
+                                ..
+                            } => {}
                             ProofNode::Numbered(next_line)
                                 if !next_line.is_inference()
                                     && next_line.introduces_boxed_constant() =>
                             {
-                                return Err(Diagnostic::new("Error: a boxed constant can only be introduced in the premise of a subproof".to_owned(), Some(nodes[next_idx].span().clone())));
+                                return Err(Diagnostic::new("Error: a boxed constant can only be introduced in the premise of a subproof".to_owned(), nodes[next_idx].span().clone()));
                             }
                             _ => {}
                         }
@@ -392,14 +423,16 @@ impl Proof {
                     let Some(next_idx) = next_meaningful(nodes, i + 1) else {
                         return Err(Diagnostic::new(
                             "Error: a proof cannot end with a boxed constant.".to_owned(),
-                            Some(nodes[i].span().clone()),
+                            nodes[i].span().clone(),
                         ));
                     };
                     match nodes[next_idx].value() {
-                        ProofNode::FitchBar { .. } => {}
+                        ProofNode::FitchBar {
+                            ..
+                        } => {}
                         _ => {
                             return Err(Diagnostic::new("Error: after a line with a boxed constant, there should be a Fitch bar"
-                                .to_owned(), Some(nodes[next_idx].span().clone())));
+                                .to_owned(), nodes[next_idx].span().clone()));
                         }
                     }
                 }
@@ -418,7 +451,7 @@ impl Proof {
                         "Line numbers are wrong; discrepancy between line {prev_num} and {num}...",
                         num = line.line_num
                     ),
-                        Some(node.span().clone()),
+                        node.span().clone(),
                     ));
                 }
                 prev_num = line.line_num;

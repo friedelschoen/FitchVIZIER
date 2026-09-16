@@ -1,6 +1,7 @@
 use crate::loc::{Span, WithSpan};
 
 pub type LProofNode = WithSpan<ProofNode>;
+pub type LParsedProofNode = WithSpan<ParsedProofNode>;
 pub type LWff = WithSpan<Wff>;
 pub type LTerm = WithSpan<Term>;
 pub type LJustification = WithSpan<Justification>;
@@ -45,25 +46,41 @@ pub enum ProofNode {
     /// A numbered line (premise or inference). These are the only nodes that carry a line number.
     Numbered(NumberedLine),
     /// A Fitch bar line (`| ---`) separating premises from a subproof body or the initial derivation.
-    FitchBar { depth: usize },
+    FitchBar {
+        depth: usize,
+    },
     /// An empty line that contains only scope markers (vertical bars). These are rare but allowed.
-    Empty { depth: usize },
+    Empty {
+        depth: usize,
+    },
     /// Synthetic element inserted when a new subproof scope is opened. It immediately precedes the
     /// numbered line that serves as the subproof premise.
-    SubproofOpen { depth: usize },
+    SubproofOpen {
+        depth: usize,
+    },
     /// Synthetic element inserted when one or more subproof scopes close. It precedes the next
     /// textual node at the shallower depth.
-    SubproofClose { depth: usize },
+    SubproofClose {
+        depth: usize,
+    },
 }
 
 impl ProofNode {
     pub fn depth(&self) -> usize {
         match self {
             ProofNode::Numbered(line) => line.depth,
-            ProofNode::FitchBar { depth }
-            | ProofNode::Empty { depth }
-            | ProofNode::SubproofOpen { depth }
-            | ProofNode::SubproofClose { depth } => *depth,
+            ProofNode::FitchBar {
+                depth,
+            }
+            | ProofNode::Empty {
+                depth,
+            }
+            | ProofNode::SubproofOpen {
+                depth,
+            }
+            | ProofNode::SubproofClose {
+                depth,
+            } => *depth,
         }
     }
 
@@ -83,10 +100,90 @@ impl ProofNode {
     }
 
     pub fn is_structural(&self) -> bool {
-        matches!(
-            self,
-            ProofNode::SubproofOpen { .. } | ProofNode::SubproofClose { .. }
-        )
+        matches!(self, ProofNode::SubproofOpen { .. } | ProofNode::SubproofClose { .. })
+    }
+}
+
+/// A `ProofNode` represents every relevant element of a Fitch-style proof in document order.
+///
+/// Roughly, it correponds to either a physical line in a text-based
+/// proof, or it represens opening/closing a new subproof.
+#[derive(PartialEq, Debug, Clone)]
+pub enum ParsedProofNode {
+    /// A numbered line (premise or inference). These are the only nodes that carry a line number.
+    Numbered(ParsedNumberedLine),
+    /// A Fitch bar line (`| ---`) separating premises from a subproof body or the initial derivation.
+    FitchBar {
+        depth: usize,
+    },
+    /// An empty line that contains only scope markers (vertical bars). These are rare but allowed.
+    Empty {
+        depth: usize,
+    },
+    /// Synthetic element inserted when a new subproof scope is opened. It immediately precedes the
+    /// numbered line that serves as the subproof premise.
+    SubproofOpen {
+        depth: usize,
+    },
+    /// Synthetic element inserted when one or more subproof scopes close. It precedes the next
+    /// textual node at the shallower depth.
+    SubproofClose {
+        depth: usize,
+    },
+}
+
+impl ParsedProofNode {
+    pub fn depth(&self) -> usize {
+        match self {
+            ParsedProofNode::Numbered(line) => line.depth,
+            ParsedProofNode::FitchBar {
+                depth,
+            }
+            | ParsedProofNode::Empty {
+                depth,
+            }
+            | ParsedProofNode::SubproofOpen {
+                depth,
+            }
+            | ParsedProofNode::SubproofClose {
+                depth,
+            } => *depth,
+        }
+    }
+
+    pub fn as_numbered(&self) -> Option<&ParsedNumberedLine> {
+        if let ParsedProofNode::Numbered(line) = self {
+            Some(line)
+        } else {
+            None
+        }
+    }
+
+    pub fn line_num(&self) -> Option<&WithSpan<LineNumber>> {
+        return self.as_numbered().map(|s| &s.line_num);
+    }
+
+    pub fn is_fitch_bar(&self) -> bool {
+        matches!(self, ParsedProofNode::FitchBar { .. })
+    }
+
+    pub fn is_structural(&self) -> bool {
+        matches!(self, ParsedProofNode::SubproofOpen { .. } | ParsedProofNode::SubproofClose { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineNumber {
+    Explicit(usize),
+    Auto,
+}
+
+impl std::fmt::Display for LineNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LineNumber::Explicit(nr) => nr.fmt(f),
+            LineNumber::Auto => f.write_str("."),
+        }
     }
 }
 
@@ -101,6 +198,23 @@ impl ProofNode {
 #[derive(PartialEq, Debug, Clone)]
 pub struct NumberedLine {
     pub line_num: usize,
+    pub depth: usize,
+    pub sentence: Option<LWff>,
+    pub justification: Option<LJustification>,
+    pub boxed_constant: Option<LTerm>,
+}
+
+/// Numbered proof lines carry the logical content of the user's proof.
+///
+/// A numbered line may be a premise (no justification), an inference
+/// (justification present), or a placeholder line where the user has
+/// not yet written the justification -- we want to be able to deal
+/// with those since we want to provide feedback on imcomplete proofs.
+/// Additionaly, when a boxed constant is introduced, it is stored in
+/// `boxed_constant`.
+#[derive(PartialEq, Debug, Clone)]
+pub struct ParsedNumberedLine {
+    pub line_num: WithSpan<LineNumber>,
     pub depth: usize,
     pub sentence: Option<LWff>,
     pub justification: Option<LJustification>,
@@ -228,16 +342,16 @@ impl NumberedLine {
         self.boxed_constant.as_ref()
     }
 
-    pub fn sentence_span(&self) -> Option<&Span> {
-        self.sentence.as_ref().map(|w| w.span())
+    pub fn sentence_span(&self) -> Option<Span> {
+        self.sentence.as_ref().map(|w| w.span().clone())
     }
 
-    pub fn justification_span(&self) -> Option<&Span> {
-        self.justification.as_ref().map(|j| j.span())
+    pub fn justification_span(&self) -> Option<Span> {
+        self.justification.as_ref().map(|j| j.span().clone())
     }
 
-    pub fn boxed_constant_span(&self) -> Option<&Span> {
-        self.boxed_constant.as_ref().map(|t| t.span())
+    pub fn boxed_constant_span(&self) -> Option<Span> {
+        self.boxed_constant.as_ref().map(|t| t.span().clone())
     }
 
     pub fn sentence_owned(&self) -> Option<Wff> {
@@ -288,7 +402,7 @@ pub struct DiagnosticRelation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub message: String,
-    pub span: Option<Span>,
+    pub span: Span,
     pub related: Vec<DiagnosticRelation>,
 }
 
@@ -299,7 +413,7 @@ impl AsRef<str> for Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn new(message: impl Into<String>, span: Option<Span>) -> Self {
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
         Self {
             message: message.into(),
             span,
@@ -308,19 +422,19 @@ impl Diagnostic {
     }
 
     pub fn format(self: &Diagnostic) -> String {
-        match &self.span {
-            None => self.message.clone(),
-            Some(loc) => {
-                format!(
-                    "{}:{}:{}-{}: {}",
-                    loc.start.file.clone().unwrap_or("??".to_string()),
-                    loc.start.line,
-                    loc.start.column,
-                    loc.end.column,
-                    self.message
-                )
-            }
-        }
+        let Span {
+            start,
+            end,
+        } = &self.span;
+
+        format!(
+            "{}:{}:{}-{}: {}",
+            start.file.clone().unwrap_or("??".to_string()),
+            start.line,
+            start.column,
+            end.column,
+            self.message
+        )
     }
 
     pub fn with_relation(mut self, message: impl Into<String>, span: Span) -> Self {

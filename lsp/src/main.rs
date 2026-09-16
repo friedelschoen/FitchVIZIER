@@ -28,28 +28,16 @@ struct Backend {
     documents: RwLock<HashMap<Uri, Document>>,
 }
 
-fn span_to_range(span: Option<fitch_proof::Span>) -> Range {
-    match span {
-        Some(loc) => Range {
-            start: Position {
-                line: loc.start.line.saturating_sub(1) as u32,
-                character: loc.start.column.saturating_sub(1) as u32,
-            },
-            end: Position {
-                line: loc.end.line.saturating_sub(1) as u32,
-                character: loc.end.column.saturating_sub(1) as u32,
-            },
+fn span_to_range(span: fitch_proof::Span) -> Range {
+    let fitch_proof::Span { start, end } = span;
+    Range {
+        start: Position {
+            line: start.line.saturating_sub(1) as u32,
+            character: start.column.saturating_sub(1) as u32,
         },
-
-        None => Range {
-            start: Position {
-                line: 0,
-                character: 0,
-            },
-            end: Position {
-                line: 0,
-                character: 1,
-            },
+        end: Position {
+            line: end.line.saturating_sub(1) as u32,
+            character: end.column.saturating_sub(1) as u32,
         },
     }
 }
@@ -72,7 +60,7 @@ fn diagnostic_to_lsp(uri: &Uri, result: fitch_proof::ProofResult) -> Vec<Diagnos
                 .map(|relation| DiagnosticRelatedInformation {
                     location: Location {
                         uri: uri.clone(),
-                        range: span_to_range(Some(relation.span)),
+                        range: span_to_range(relation.span),
                     },
                     message: relation.message,
                 })
@@ -91,7 +79,7 @@ fn diagnostic_to_lsp(uri: &Uri, result: fitch_proof::ProofResult) -> Vec<Diagnos
 
     match result {
         fitch_proof::ProofResult::Correct(span) => vec![Diagnostic {
-            range: span_to_range(Some(span)),
+            range: span_to_range(span),
             severity: Some(DiagnosticSeverity::INFORMATION),
             source: Some("fitchvizier".into()),
             message: "Proof is valid".into(),
@@ -123,6 +111,15 @@ fn end_position(text: &str) -> Position {
     }
 
     Position::new(line, last.encode_utf16().count() as u32)
+}
+
+impl Backend {
+    fn new(client: Client) -> Self {
+        Self {
+            client,
+            documents: RwLock::new(HashMap::new()),
+        }
+    }
 }
 
 impl LanguageServer for Backend {
@@ -248,9 +245,6 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        documents: RwLock::new(HashMap::new()),
-    });
+    let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }

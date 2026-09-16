@@ -62,7 +62,7 @@ impl Proof {
         // Note: don't remove this check on the length of `template`. It would cause some panics
         // below if the length is zero.
         if template.is_empty() {
-            return ProofResult::FatalError(Diagnostic::new("The proof template is empty. This should not be! If you see this on Themis as a student, please contact the course staff as soon as possible. Something is wrong on our side. Thanks!", None));
+            return ProofResult::FatalError(Diagnostic::new("The proof template is empty. This should not be! If you see this on Themis as a student, please contact the course staff as soon as possible. Something is wrong on our side. Thanks!", Span::dummy()));
         }
 
         // template matching errors that we will be accumulating.
@@ -101,7 +101,7 @@ impl Proof {
             if let Some(span) = first_mismatch {
                 template_errors.push(Diagnostic::new(
                     "The premises of your proof do not match the premises in the proof template.",
-                    Some(span),
+                    span,
                 ));
             }
         }
@@ -116,7 +116,7 @@ impl Proof {
                 None => {
                     template_errors.push(Diagnostic::new(
                         "It seems that your proof has no sentences in it.",
-                        None,
+                        Span::dummy(),
                     ));
                 }
                 Some(concl) => {
@@ -124,7 +124,7 @@ impl Proof {
                     if concl != template.last().unwrap() {
                         template_errors.push(Diagnostic::new("The conclusion of your proof does not match the conclusion in the proof template.", self
                             .last_numbered_node()
-                            .map(|node| node.span.clone())));
+                            .map(|node| node.span.clone()).unwrap_or_else(Span::dummy)));
                     }
                 }
             }
@@ -187,13 +187,13 @@ impl Proof {
                     if line.is_inference() {
                         errors.push(Diagnostic::new(
                             "inferences are not allowed in the premises",
-                            Some(node.span.clone()),
+                            node.span.clone(),
                         ));
                     }
                     if line.introduces_boxed_constant() {
                         errors.push(Diagnostic::new(
                             "boxed constants are not allowed in the premises",
-                            line.boxed_constant_span().cloned().or_else(|| Some(node.span.clone())),
+                            line.boxed_constant_span().unwrap_or_else(|| node.span.clone()),
                         ));
                         // break;
                     }
@@ -205,7 +205,7 @@ impl Proof {
             errors.push(Diagnostic::new(
                 "Each proof should start start with zero or more premises, followed by a Fitch bar"
                     .to_string(),
-                None,
+                Span::dummy(),
             ));
         }
         // check that user applied proof rule correctly everywhere
@@ -250,7 +250,7 @@ impl Proof {
             let lln = self.last_line_num().unwrap();
             errors.push(Diagnostic::new(
                 format!("Line {lln}: last line of proof should not be inside subproof"),
-                self.last_numbered_node().map(|node| node.span.clone()),
+                self.last_numbered_node().unwrap().span.clone(),
             ));
         }
 
@@ -300,7 +300,7 @@ impl Proof {
                             .map(|sentence| sentence.span.clone())
                             .unwrap_or_else(|| node.span.clone());
 
-                        diagnostics.push(Diagnostic::new("missing justification", Some(span)));
+                        diagnostics.push(Diagnostic::new("missing justification", span));
                     }
                 }
             }
@@ -343,7 +343,7 @@ impl Proof {
                         } else {
                             Some(Diagnostic::new(
                                 "a boxed constant cannot be a variable (should not have the name of a variable).",
-                             line.boxed_constant_span().cloned()))
+                             line.boxed_constant_span().unwrap_or_else(Span::dummy)))
                         }
                     })
                 }),
@@ -374,7 +374,7 @@ impl Proof {
                         "Internal error: introduces_boxed_constant returned true but boxed_constant missing",
                     );
                     if currently_in_scope.iter().filter_map(|opt| opt.as_ref()).any(|t| *t == bc) {
-                        errors.push(Diagnostic::new("you cannot introduce the same boxed constant twice in nested subproofs", line.boxed_constant_span().cloned()));
+                        errors.push(Diagnostic::new("you cannot introduce the same boxed constant twice in nested subproofs", line.boxed_constant_span().unwrap_or_else(Span::dummy)));
                     }
                     currently_in_scope.push(Some(bc));
                     // if the line introducing a boxed constant also contains a formula
@@ -455,7 +455,7 @@ impl Proof {
                                 .filter_map(|x| x.as_ref())
                                 .any(|t| t == term.value())
                         {
-                            Err(Diagnostic::new(format!("Line {line_num}: it is not allowed to use a boxed constant outside the subproof that defines it"), Some(term.span.clone())))
+                            Err(Diagnostic::new(format!("Line {line_num}: it is not allowed to use a boxed constant outside the subproof that defines it"), term.span.clone()))
                         } else {
                             Ok(())
                         }
@@ -580,14 +580,14 @@ impl Proof {
                 )),
                 Wff::Forall(var, body) | Wff::Exists(var, body) => {
                     if !proof.allowed_variable_names.contains(var) {
-                        Err(Diagnostic::new(format!("Line {line_num}: you can only quantify over a variable, not over a constant."), Some(wff.span.clone())))
+                        Err(Diagnostic::new(format!("Line {line_num}: you can only quantify over a variable, not over a constant."), wff.span.clone()))
                     } else if bound_vars_in_scope.contains(var) {
                         Err(Diagnostic::new(
                             format!(
                                 "Line {line_num}: this line contains \
                                    two nested quantifiers over the same variable."
                             ),
-                            Some(wff.span.clone()),
+                            wff.span.clone(),
                         ))
                     } else {
                         bound_vars_in_scope.push(var.to_string());
@@ -617,7 +617,7 @@ impl Proof {
                     {
                         Err(Diagnostic::new(
                             format!("Line {line_num}: this line contains unbound variables."),
-                            Some(term.span.clone()),
+                            term.span.clone(),
                         ))
                     } else {
                         Ok(())
@@ -639,7 +639,7 @@ impl Proof {
                                 "Line {line_num}: you cannot have a function called \
                                  {name}, because {name} is a reserved name for variables."
                             ),
-                            Some(term.span.clone()),
+                            term.span.clone(),
                         ))
                     } else {
                         Ok(())
@@ -671,7 +671,8 @@ impl Proof {
                 panic!("The list of arities is empty -- this should not happen!");
             }
             if arities.len() > 1 {
-                let span = arities_loc.first().map(|(_, loc)| loc.clone());
+                let span =
+                    arities_loc.first().map(|(_, loc)| loc.clone()).unwrap_or_else(Span::dummy);
                 if arities.contains(&0) {
                     if name.chars().next().unwrap().is_lowercase() {
                         errors.push(Diagnostic::new(format!("Error: it seems like you use the name \'{name}\' both to denote a constant, and to denote a function symbol"), span));
@@ -798,7 +799,7 @@ impl Proof {
         let Some(node) = self.find_numbered_node(requested_line) else {
             return Err(Diagnostic::new(
                 format!("line {requested_line} does not exist"),
-                Some(reference.span.clone()),
+                reference.span.clone(),
             ));
         };
 
@@ -809,7 +810,7 @@ impl Proof {
         let Some(wff) = line.sentence_with_loc() else {
             return Err(Diagnostic::new(
                 format!("line {requested_line} does not contain a sentence"),
-                Some(reference.span.clone()),
+                reference.span.clone(),
             )
             .with_relation(format!("referenced line {requested_line}"), node.span.clone()));
         };
@@ -825,7 +826,7 @@ impl Proof {
                 )
             };
 
-            return Err(Diagnostic::new(message, Some(reference.span.clone()))
+            return Err(Diagnostic::new(message, reference.span.clone())
                 .with_relation(format!("referenced line {requested_line}"), node.span.clone()));
         }
 
@@ -860,7 +861,7 @@ impl Proof {
             format!(
                 "the referenced subproof {subproof_begin}-{subproof_end} is not in the scope of line {referencing_line}, or it does not exist"
             ),
-            Some(begin_ref.span.clone()),
+            begin_ref.span.clone(),
         );
 
         if let Some(node) = self.find_numbered_node(subproof_begin) {
@@ -888,13 +889,16 @@ impl Proof {
         };
 
         let Some(curr_wff) = line.sentence_with_loc() else {
-            return Err(Diagnostic::new("no formula present", line.justification_span().cloned()));
+            return Err(Diagnostic::new(
+                "no formula present",
+                line.justification_span().unwrap_or_else(Span::dummy),
+            ));
         };
 
-        let here = |message: String| Diagnostic::new(message, Some(curr_wff.span.clone()));
+        let here = |message: String| Diagnostic::new(message, curr_wff.span.clone());
 
         let referenced = |message: String, reference: &LineRef, wff: &LWff| {
-            Diagnostic::new(message, Some(reference.span.clone()))
+            Diagnostic::new(message, reference.span.clone())
                 .with_relation(format!("referenced line {}", reference.line), wff.span.clone())
         };
 
@@ -1025,7 +1029,7 @@ impl Proof {
                     if s_begin.boxed_constant().is_some() {
                         return Err(Diagnostic::new(
                             "when using ∨Elim, referenced subproofs may not introduce a boxed constant".to_string(),
-                            Some(sb.span.clone()),
+                            sb.span.clone(),
                         ));
                     }
 
@@ -1033,14 +1037,14 @@ impl Proof {
                         return Err(Diagnostic::new(
                             "when using ∨Elim, each referenced subproof must start with a sentence"
                                 .to_string(),
-                            Some(sb.span.clone()),
+                            sb.span.clone(),
                         ));
                     };
                     let Some(s_end_wff) = s_end.sentence_with_loc() else {
                         return Err(Diagnostic::new(
                             "when using ∨Elim, each referenced subproof must end with a sentence"
                                 .to_string(),
-                            Some(se.span.clone()),
+                            se.span.clone(),
                         ));
                     };
 
@@ -1048,7 +1052,7 @@ impl Proof {
                         return Err(
                             Diagnostic::new(
                                 "the premise of a referenced subproof does not match its corresponding disjunct".to_string(),
-                                Some(sb.span.clone()),
+                                sb.span.clone(),
                             )
                             .with_relation(
                                 format!("subproof premise at line {}", sb.line),
@@ -1065,7 +1069,7 @@ impl Proof {
                         return Err(Diagnostic::new(
                             "not all referenced subproofs end with the inferred sentence"
                                 .to_string(),
-                            Some(se.span.clone()),
+                            se.span.clone(),
                         )
                         .with_relation(
                             format!("subproof conclusion at line {}", se.line),
@@ -1091,7 +1095,7 @@ impl Proof {
                 ) else {
                     return Err(Diagnostic::new(
                         "when using →Intro, the referenced subproof must not introduce a boxed constant and must have a premise and conclusion".to_string(),
-                        Some(n.span.clone()),
+                        n.span.clone(),
                     ));
                 };
 
@@ -1103,7 +1107,7 @@ impl Proof {
                     (false, true) => Err(
                         Diagnostic::new(
                             "the premise of the referenced subproof does not match the antecedent of the implication".to_string(),
-                            Some(n.span.clone()),
+                            n.span.clone(),
                         )
                         .with_relation(
                             format!("subproof premise at line {}", n.line),
@@ -1113,7 +1117,7 @@ impl Proof {
                     (true, false) => Err(
                         Diagnostic::new(
                             "the conclusion of the referenced subproof does not match the consequent of the implication".to_string(),
-                            Some(m.span.clone()),
+                            m.span.clone(),
                         )
                         .with_relation(
                             format!("subproof conclusion at line {}", m.line),
@@ -1123,7 +1127,7 @@ impl Proof {
                     (false, false) => Err(
                         Diagnostic::new(
                             "the premise and conclusion of the referenced subproof do not match the antecedent and consequent of the implication".to_string(),
-                            Some(n.span.clone()),
+                            n.span.clone(),
                         )
                         .with_relation(
                             format!("subproof premise at line {}", n.line),
@@ -1181,14 +1185,14 @@ impl Proof {
                 ) else {
                     return Err(Diagnostic::new(
                         "↔Intro requires two subproofs with a premise and conclusion".to_string(),
-                        Some(sb1.span.clone()),
+                        sb1.span.clone(),
                     ));
                 };
 
                 if s_begin1.boxed_constant().is_some() || s_begin2.boxed_constant().is_some() {
                     return Err(Diagnostic::new(
                         "when using ↔Intro, referenced subproofs may not introduce a boxed constant".to_string(),
-                        Some(sb1.span.clone()),
+                        sb1.span.clone(),
                     ));
                 }
 
@@ -1258,7 +1262,7 @@ impl Proof {
                     return Err(Diagnostic::new(
                         "¬Intro requires a referenced subproof with a premise and conclusion"
                             .to_string(),
-                        Some(n.span.clone()),
+                        n.span.clone(),
                     ));
                 };
 
@@ -1266,7 +1270,7 @@ impl Proof {
                     return Err(Diagnostic::new(
                         "the negated formula does not match the premise of the referenced subproof"
                             .to_string(),
-                        Some(n.span.clone()),
+                        n.span.clone(),
                     )
                     .with_relation(
                         format!("subproof premise at line {}", n.line),
@@ -1277,7 +1281,7 @@ impl Proof {
                 if *s_end_wff.value() != Wff::Bottom {
                     return Err(Diagnostic::new(
                         "the referenced subproof does not end in ⊥".to_string(),
-                        Some(m.span.clone()),
+                        m.span.clone(),
                     )
                     .with_relation(
                         format!("subproof conclusion at line {}", m.line),
@@ -1405,21 +1409,21 @@ impl Proof {
                     return Err(Diagnostic::new(
                         "∀Intro requires a referenced subproof that introduces a boxed constant"
                             .to_string(),
-                        Some(sb.span.clone()),
+                        sb.span.clone(),
                     ));
                 };
 
                 if s_begin.sentence().is_some() {
                     return Err(Diagnostic::new(
                         "when using ∀Intro, the premise of the referenced subproof should contain only a boxed constant, without a sentence".to_string(),
-                        Some(sb.span.clone()),
+                        sb.span.clone(),
                     ));
                 }
 
                 let Some(sent_end) = s_end.sentence_with_loc() else {
                     return Err(Diagnostic::new(
                         format!("line {} does not contain a sentence", se.line),
-                        Some(se.span.clone()),
+                        se.span.clone(),
                     ));
                 };
 
@@ -1434,7 +1438,7 @@ impl Proof {
                                 "replacing every occurrence of {var} by {bc} does not produce the sentence in line {}",
                                 se.line
                             ),
-                            Some(se.span.clone()),
+                            se.span.clone(),
                         )
                         .with_relation(
                             format!("subproof conclusion at line {}", se.line),
@@ -1568,20 +1572,20 @@ impl Proof {
                     return Err(Diagnostic::new(
                         "∃Elim requires a referenced subproof that introduces a boxed constant"
                             .to_string(),
-                        Some(sb.span.clone()),
+                        sb.span.clone(),
                     ));
                 };
 
                 let Some(sent_begin) = s_begin.sentence_with_loc() else {
                     return Err(Diagnostic::new(
                         "when using ∃Elim, the first line of the subproof must contain both a boxed constant and a sentence".to_string(),
-                        Some(sb.span.clone()),
+                        sb.span.clone(),
                     ));
                 };
                 let Some(sent_end) = s_end.sentence_with_loc() else {
                     return Err(Diagnostic::new(
                         format!("line {} does not contain a sentence", se.line),
-                        Some(se.span.clone()),
+                        se.span.clone(),
                     ));
                 };
 
@@ -1599,7 +1603,7 @@ impl Proof {
                                 "the sentence in line {} is not the same as the inferred sentence",
                                 se.line
                             ),
-                            Some(se.span.clone()),
+                            se.span.clone(),
                         )
                         .with_relation(
                             format!("subproof conclusion at line {}", se.line),
@@ -1613,7 +1617,7 @@ impl Proof {
                                 "substituting {bc} for every free occurrence of {var} does not produce the sentence in line {}",
                                 sb.line
                             ),
-                            Some(sb.span.clone()),
+                            sb.span.clone(),
                         )
                         .with_relation(
                             format!("existential sentence at line {}", n.line),
