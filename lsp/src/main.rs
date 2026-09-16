@@ -28,16 +28,16 @@ struct Backend {
     documents: RwLock<HashMap<Uri, Document>>,
 }
 
-fn location_to_range(span: Option<fitch_proof::Location>) -> Range {
+fn span_to_range(span: Option<fitch_proof::Span>) -> Range {
     match span {
         Some(loc) => Range {
             start: Position {
-                line: loc.line.saturating_sub(1) as u32,
-                character: loc.column.saturating_sub(1) as u32,
+                line: loc.start.line.saturating_sub(1) as u32,
+                character: loc.start.column.saturating_sub(1) as u32,
             },
             end: Position {
-                line: loc.line as u32,
-                character: loc.column as u32,
+                line: loc.end.line.saturating_sub(1) as u32,
+                character: loc.end.column.saturating_sub(1) as u32,
             },
         },
 
@@ -54,29 +54,57 @@ fn location_to_range(span: Option<fitch_proof::Location>) -> Range {
     }
 }
 
-fn diagnostic_to_lsp(result: fitch_proof::ProofResult) -> Vec<Diagnostic> {
-    fn convert(diag: fitch_proof::Diagnostic, severity: DiagnosticSeverity) -> Diagnostic {
-        let fitch_proof::Diagnostic { message, location } = diag;
+fn diagnostic_to_lsp(uri: &Uri, result: fitch_proof::ProofResult) -> Vec<Diagnostic> {
+    fn convert(
+        uri: &Uri,
+        diag: fitch_proof::Diagnostic,
+        severity: DiagnosticSeverity,
+    ) -> Diagnostic {
+        let fitch_proof::Diagnostic {
+            message,
+            span,
+            related,
+        } = diag;
+
+        let related_information = (!related.is_empty()).then(|| {
+            related
+                .into_iter()
+                .map(|relation| DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: uri.clone(),
+                        range: span_to_range(Some(relation.span)),
+                    },
+                    message: relation.message,
+                })
+                .collect()
+        });
 
         Diagnostic {
-            range: location_to_range(location),
+            range: span_to_range(span),
             severity: Some(severity),
             source: Some("fitchvizier".into()),
             message,
+            related_information,
             ..Default::default()
         }
     }
 
     match result {
-        fitch_proof::ProofResult::Correct => vec![],
+        fitch_proof::ProofResult::Correct(span) => vec![Diagnostic {
+            range: span_to_range(Some(span)),
+            severity: Some(DiagnosticSeverity::INFORMATION),
+            source: Some("fitchvizier".into()),
+            message: "Proof is valid".into(),
+            ..Default::default()
+        }],
 
         fitch_proof::ProofResult::FatalError(diag) => {
-            vec![convert(diag, DiagnosticSeverity::ERROR)]
+            vec![convert(&uri, diag, DiagnosticSeverity::ERROR)]
         }
 
         fitch_proof::ProofResult::Error(diags) => diags
             .into_iter()
-            .map(|diag| convert(diag, DiagnosticSeverity::WARNING))
+            .map(|diag| convert(&uri, diag, DiagnosticSeverity::WARNING))
             .collect(),
     }
 }
@@ -173,7 +201,7 @@ impl LanguageServer for Backend {
             .map(|document| {
                 fitch_proof::check_proof_diagnostics(&document.text, DEFAULT_ALLOWED_VARIABLE_NAMES)
             })
-            .flat_map(diagnostic_to_lsp)
+            .flat_map(|d| diagnostic_to_lsp(&params.text_document.uri, d))
             .collect();
 
         Ok(DocumentDiagnosticReportResult::Report(

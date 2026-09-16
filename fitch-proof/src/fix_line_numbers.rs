@@ -28,13 +28,18 @@ pub fn fix_line_numbers(proof_nodes: &mut [LProofNode]) {
         }
     }
 
-    let remap = |n: &usize| *line_num_map.get(n).unwrap_or(&0);
+    let remap = |n: &LineRef| LineRef {
+        span: n.span.clone(),
+        line: *line_num_map.get(&n.line).unwrap_or(&0),
+    };
 
     for node in proof_nodes.iter_mut() {
         if let ProofNode::Numbered(line) = node.value_mut() {
             if let Some(just) = line.justification_with_loc() {
-                line.justification =
-                    Some(dummy_ljustification(remap_justification(just.value(), &remap)));
+                line.justification = Some(dummy_ljustification(remap_justification(
+                    just.value(),
+                    &remap,
+                )));
             }
         }
     }
@@ -42,7 +47,7 @@ pub fn fix_line_numbers(proof_nodes: &mut [LProofNode]) {
 
 fn remap_justification<F>(just: &Justification, remap: &F) -> Justification
 where
-    F: Fn(&usize) -> usize,
+    F: Fn(&LineRef) -> LineRef,
 {
     match just {
         Justification::Reit(n) => Justification::Reit(remap(n)),

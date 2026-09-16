@@ -52,7 +52,7 @@ impl Summary {
     }
 }
 
-fn collect_summary(nodes: &[WithLoc<ProofNode>]) -> Summary {
+fn collect_summary(nodes: &[WithSpan<ProofNode>]) -> Summary {
     let mut line_count = 0;
     let mut rules_used = initial_table();
     let mut max_depth = 0;

@@ -1,24 +1,24 @@
-use crate::loc::{Location, WithLoc};
+use crate::loc::{Span, WithSpan};
 
-pub type LProofNode = WithLoc<ProofNode>;
-pub type LWff = WithLoc<Wff>;
-pub type LTerm = WithLoc<Term>;
-pub type LJustification = WithLoc<Justification>;
+pub type LProofNode = WithSpan<ProofNode>;
+pub type LWff = WithSpan<Wff>;
+pub type LTerm = WithSpan<Term>;
+pub type LJustification = WithSpan<Justification>;
 
 // Temp code for plugging in type errors
 #[allow(dead_code)]
 pub fn dummy_lwff(wff: Wff) -> LWff {
-    WithLoc::dummy(wff)
+    WithSpan::dummy(wff)
 }
 
 #[allow(dead_code)]
 pub fn dummy_lterm(term: Term) -> LTerm {
-    WithLoc::dummy(term)
+    WithSpan::dummy(term)
 }
 
 #[allow(dead_code)]
 pub fn dummy_ljustification(just: Justification) -> LJustification {
-    WithLoc::dummy(just)
+    WithSpan::dummy(just)
 }
 
 #[allow(dead_code)]
@@ -45,41 +45,25 @@ pub enum ProofNode {
     /// A numbered line (premise or inference). These are the only nodes that carry a line number.
     Numbered(NumberedLine),
     /// A Fitch bar line (`| ---`) separating premises from a subproof body or the initial derivation.
-    FitchBar {
-        depth: usize,
-    },
+    FitchBar { depth: usize },
     /// An empty line that contains only scope markers (vertical bars). These are rare but allowed.
-    Empty {
-        depth: usize,
-    },
+    Empty { depth: usize },
     /// Synthetic element inserted when a new subproof scope is opened. It immediately precedes the
     /// numbered line that serves as the subproof premise.
-    SubproofOpen {
-        depth: usize,
-    },
+    SubproofOpen { depth: usize },
     /// Synthetic element inserted when one or more subproof scopes close. It precedes the next
     /// textual node at the shallower depth.
-    SubproofClose {
-        depth: usize,
-    },
+    SubproofClose { depth: usize },
 }
 
 impl ProofNode {
     pub fn depth(&self) -> usize {
         match self {
             ProofNode::Numbered(line) => line.depth,
-            ProofNode::FitchBar {
-                depth,
-            }
-            | ProofNode::Empty {
-                depth,
-            }
-            | ProofNode::SubproofOpen {
-                depth,
-            }
-            | ProofNode::SubproofClose {
-                depth,
-            } => *depth,
+            ProofNode::FitchBar { depth }
+            | ProofNode::Empty { depth }
+            | ProofNode::SubproofOpen { depth }
+            | ProofNode::SubproofClose { depth } => *depth,
         }
     }
 
@@ -99,7 +83,10 @@ impl ProofNode {
     }
 
     pub fn is_structural(&self) -> bool {
-        matches!(self, ProofNode::SubproofOpen { .. } | ProofNode::SubproofClose { .. })
+        matches!(
+            self,
+            ProofNode::SubproofOpen { .. } | ProofNode::SubproofClose { .. }
+        )
     }
 }
 
@@ -171,29 +158,41 @@ pub enum Term {
     FuncApp(String, Vec<LTerm>),
 }
 
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+pub struct LineRef {
+    pub line: usize,
+    pub span: Span,
+}
+
+impl std::fmt::Display for LineRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.line)
+    }
+}
+
 /// This enum represents the justification rules for an inference. The associated [usize]s denote
 /// the line numbers being represented.
 #[derive(PartialEq, Debug, Clone)]
 pub enum Justification {
-    AndIntro(Vec<usize>),
-    AndElim(usize),
-    OrIntro(usize),
-    OrElim(usize, Vec<(usize, usize)>),
-    NotIntro((usize, usize)),
-    NotElim(usize),
-    BottomIntro(usize, usize),
-    BottomElim(usize),
-    ImpliesIntro((usize, usize)),
-    ImpliesElim(usize, usize),
-    BicondIntro((usize, usize), (usize, usize)),
-    BicondElim(usize, usize),
+    AndIntro(Vec<LineRef>),
+    AndElim(LineRef),
+    OrIntro(LineRef),
+    OrElim(LineRef, Vec<(LineRef, LineRef)>),
+    NotIntro((LineRef, LineRef)),
+    NotElim(LineRef),
+    BottomIntro(LineRef, LineRef),
+    BottomElim(LineRef),
+    ImpliesIntro((LineRef, LineRef)),
+    ImpliesElim(LineRef, LineRef),
+    BicondIntro((LineRef, LineRef), (LineRef, LineRef)),
+    BicondElim(LineRef, LineRef),
     EqualsIntro,
-    EqualsElim(usize, usize),
-    ForallIntro((usize, usize)),
-    ForallElim(usize),
-    ExistsIntro(usize),
-    ExistsElim(usize, (usize, usize)),
-    Reit(usize),
+    EqualsElim(LineRef, LineRef),
+    ForallIntro((LineRef, LineRef)),
+    ForallElim(LineRef),
+    ExistsIntro(LineRef),
+    ExistsElim(LineRef, (LineRef, LineRef)),
+    Reit(LineRef),
 }
 
 impl NumberedLine {
@@ -229,16 +228,16 @@ impl NumberedLine {
         self.boxed_constant.as_ref()
     }
 
-    pub fn sentence_loc(&self) -> Option<&Location> {
-        self.sentence.as_ref().map(|w| w.location())
+    pub fn sentence_span(&self) -> Option<&Span> {
+        self.sentence.as_ref().map(|w| w.span())
     }
 
-    pub fn justification_loc(&self) -> Option<&Location> {
-        self.justification.as_ref().map(|j| j.location())
+    pub fn justification_span(&self) -> Option<&Span> {
+        self.justification.as_ref().map(|j| j.span())
     }
 
-    pub fn boxed_constant_loc(&self) -> Option<&Location> {
-        self.boxed_constant.as_ref().map(|t| t.location())
+    pub fn boxed_constant_span(&self) -> Option<&Span> {
+        self.boxed_constant.as_ref().map(|t| t.span())
     }
 
     pub fn sentence_owned(&self) -> Option<Wff> {
@@ -281,9 +280,16 @@ impl Justification {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticRelation {
+    pub message: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub message: String,
-    pub location: Option<Location>,
+    pub span: Option<Span>,
+    pub related: Vec<DiagnosticRelation>,
 }
 
 impl AsRef<str> for Diagnostic {
@@ -293,19 +299,43 @@ impl AsRef<str> for Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn format(self : &Diagnostic) -> String {
-        match &self.location  {
-            None => self.message.clone(),
-            Some(loc) =>
-                format!("line {}:{}: {}", loc.line, loc.column, self.message)
+    pub fn new(message: impl Into<String>, span: Option<Span>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            related: Vec::new(),
         }
+    }
+
+    pub fn format(self: &Diagnostic) -> String {
+        match &self.span {
+            None => self.message.clone(),
+            Some(loc) => {
+                format!(
+                    "{}:{}:{}-{}: {}",
+                    loc.start.file.clone().unwrap_or("??".to_string()),
+                    loc.start.line,
+                    loc.start.column,
+                    loc.end.column,
+                    self.message
+                )
+            }
+        }
+    }
+
+    pub fn with_relation(mut self, message: impl Into<String>, span: Span) -> Self {
+        self.related.push(DiagnosticRelation {
+            message: message.into(),
+            span,
+        });
+        self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProofResult {
     /// No mistakes; proof is correct.
-    Correct,
+    Correct(Span),
     /// An 'error' is a mistake that makes the proof wrong, but still allows
     /// the checker to go on and find other mistakes. This [ProofResult::Error]
     /// variant denotes the list of errors that was obtained during analysis.
