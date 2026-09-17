@@ -73,9 +73,9 @@ impl Proof {
             let mut premises_in_proof =
                 self.nodes.iter().take_while(|node| !node.is_fitch_bar()).filter_map(|node| {
                     match node.value() {
-                        ProofNode::Numbered(line) => {
-                            line.sentence().map(|sentence| (sentence, node.span()))
-                        }
+                        ProofNode::Numbered(line) => line
+                            .sentence_with_loc()
+                            .map(|sentence| (sentence.value(), sentence.span())),
                         _ => None,
                     }
                 });

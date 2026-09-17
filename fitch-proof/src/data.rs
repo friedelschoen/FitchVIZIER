@@ -221,12 +221,12 @@ pub struct ParsedNumberedLine {
     pub boxed_constant: Option<LTerm>,
 }
 
-#[derive(PartialEq, Debug, Clone)]
 /// A logical sentence. "Wff" stands for "well-formed formula", but this is a slightly incorrect
 /// name, since for example, a logical sentence that has predicate ariy mismatches is still
 /// expressable in this [Wff]. A [Wff] is a core element of a proof. For example, each proof line
 /// that has a line number, will contain a [Wff] (unless it is a line which only introduces a boxed
 /// constant).
+#[derive(PartialEq, Debug, Clone)]
 pub enum Wff {
     /// Conjunction.
     And(Vec<LWff>),

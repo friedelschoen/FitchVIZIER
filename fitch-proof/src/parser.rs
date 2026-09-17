@@ -366,7 +366,7 @@ fn parse_e2(toks: &[LToken]) -> Option<(LWff, &[LToken])> {
 
 fn span_of_tokens(toks: &[LToken]) -> Span {
     let first = toks.first().expect("list cannot be empty");
-    let last = toks.first().expect("list cannot be empty");
+    let last = toks.last().expect("list cannot be empty");
 
     Span::cover(first.span(), last.span())
 }
