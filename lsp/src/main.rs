@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use clap::Parser;
-use fitch_proof;
-use tokio;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
@@ -84,12 +82,12 @@ fn diagnostic_to_lsp(uri: &Uri, result: fitch_proof::ProofResult) -> Vec<Diagnos
         }],
 
         fitch_proof::ProofResult::FatalError(diag) => {
-            vec![convert(&uri, diag, DiagnosticSeverity::ERROR)]
+            vec![convert(uri, diag, DiagnosticSeverity::ERROR)]
         }
 
         fitch_proof::ProofResult::Error(diags) => diags
             .into_iter()
-            .map(|diag| convert(&uri, diag, DiagnosticSeverity::WARNING))
+            .map(|diag| convert(uri, diag, DiagnosticSeverity::WARNING))
             .collect(),
     }
 }
