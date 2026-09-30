@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use clap::Parser;
-use fitch_proof;
-use tokio;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
@@ -13,9 +11,6 @@ struct Args {
     #[arg(long, action)]
     debug: bool,
 }
-
-/// by default we use a,b,c for constants and x,y,z for variables
-const DEFAULT_ALLOWED_VARIABLE_NAMES: &str = "x,y,z,u,v,w";
 
 #[derive(Debug)]
 struct Document {
@@ -87,12 +82,12 @@ fn diagnostic_to_lsp(uri: &Uri, result: fitch_proof::ProofResult) -> Vec<Diagnos
         }],
 
         fitch_proof::ProofResult::FatalError(diag) => {
-            vec![convert(&uri, diag, DiagnosticSeverity::ERROR)]
+            vec![convert(uri, diag, DiagnosticSeverity::ERROR)]
         }
 
         fitch_proof::ProofResult::Error(diags) => diags
             .into_iter()
-            .map(|diag| convert(&uri, diag, DiagnosticSeverity::WARNING))
+            .map(|diag| convert(uri, diag, DiagnosticSeverity::WARNING))
             .collect(),
     }
 }
@@ -145,8 +140,8 @@ impl LanguageServer for Backend {
             },
 
             server_info: Some(ServerInfo {
-                name: "fitchvizier-lsp".into(),
-                version: None,
+                name: env!("CARGO_BIN_NAME").into(),
+                version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
 
             offset_encoding: None,
@@ -196,7 +191,10 @@ impl LanguageServer for Backend {
             .get(&params.text_document.uri)
             .iter()
             .map(|document| {
-                fitch_proof::check_proof_diagnostics(&document.text, DEFAULT_ALLOWED_VARIABLE_NAMES)
+                fitch_proof::check_proof_diagnostics(
+                    &document.text,
+                    fitch_proof::DEFAULT_ALLOWED_VARIABLE_NAMES,
+                )
             })
             .flat_map(|d| diagnostic_to_lsp(&params.text_document.uri, d))
             .collect();

@@ -21,9 +21,6 @@ struct Args {
 }
 
 
-/// by default we use a,b,c for constants and x,y,z for variables
-const DEFAULT_ALLOWED_VARIABLE_NAMES: &str = "x,y,z,u,v,w";
-
 /// The *proof* itself (what the student wrote) should be given as a command line argument.
 ///
 /// The *proof template* should be given via `stdin`.
@@ -57,7 +54,7 @@ fn main() {
 }
 
 fn check_file(template: Option<&[String]>, proof_file : &String, debug: bool) {
-    let variables = DEFAULT_ALLOWED_VARIABLE_NAMES.to_string();
+    let variables = fitch_proof::DEFAULT_ALLOWED_VARIABLE_NAMES.to_string();
 
     let Ok(proof) = std::fs::read_to_string(proof_file) else {
         println!(
