@@ -140,8 +140,8 @@ impl LanguageServer for Backend {
             },
 
             server_info: Some(ServerInfo {
-                name: "fitchvizier-lsp".into(),
-                version: None,
+                name: env!("CARGO_BIN_NAME").into(),
+                version: Some(env!("CARGO_PKG_VERSION").into()),
             }),
 
             offset_encoding: None,
