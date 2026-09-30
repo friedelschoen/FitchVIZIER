@@ -446,6 +446,34 @@ impl Diagnostic {
     }
 }
 
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Diagnostic {
+            message,
+            span,
+            related,
+        } = self;
+        write!(f, "{span}: {message}")?;
+
+        for rel in related {
+            write!(f, "\n\t")?;
+            rel.fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for DiagnosticRelation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let DiagnosticRelation {
+            message,
+            span,
+        } = self;
+        write!(f, "{span}: {message}")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProofResult {
     /// No mistakes; proof is correct.

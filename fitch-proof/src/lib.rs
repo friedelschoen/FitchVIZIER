@@ -10,7 +10,9 @@ mod parser;
 mod proof;
 mod util;
 use crate::data::Wff;
-pub use crate::data::{Diagnostic, Justification, NumberedLine, ProofNode, ProofResult};
+pub use crate::data::{
+    Diagnostic, Justification, NumberedLine, ParsedProofNode, ProofNode, ProofResult,
+};
 pub use crate::loc::{Location, Span, WithSpan};
 pub use parser::parse_fitch_proof;
 pub use parser::parse_logical_expression_string;

@@ -4,9 +4,9 @@ use fitch_proof::*;
 type SummaryTable = Vec<(&'static str, Vec<(&'static str, usize)>)>;
 
 struct Summary {
-    table : SummaryTable,
-    line_count : i32,
-    max_depth : usize
+    table: SummaryTable,
+    line_count: i32,
+    max_depth: usize,
 }
 
 fn initial_table() -> SummaryTable {
@@ -24,12 +24,14 @@ fn initial_table() -> SummaryTable {
     ]
 }
 
-fn merge_summary_tables<'a>(base: &'a mut SummaryTable, other: &SummaryTable) -> &'a mut SummaryTable {
+fn merge_summary_tables<'a>(
+    base: &'a mut SummaryTable,
+    other: &SummaryTable,
+) -> &'a mut SummaryTable {
     for (connective, stats) in other {
         if let Some((_, base_stats)) = base.iter_mut().find(|(c, _)| *c == *connective) {
             for (direction, count) in stats {
-                if let Some((_, base_count)) =
-                    base_stats.iter_mut().find(|(d, _)| *d == *direction)
+                if let Some((_, base_count)) = base_stats.iter_mut().find(|(d, _)| *d == *direction)
                 {
                     *base_count += count;
                 } else {
@@ -44,41 +46,51 @@ fn merge_summary_tables<'a>(base: &'a mut SummaryTable, other: &SummaryTable) ->
 }
 
 impl Summary {
-    fn merge <'a>(self: &'a mut Summary, other: &Summary) -> &'a mut Summary {
+    fn merge<'a>(self: &'a mut Summary, other: &Summary) -> &'a mut Summary {
         merge_summary_tables(&mut self.table, &other.table);
-        if other.max_depth > self.max_depth { self.max_depth = other.max_depth };
+        if other.max_depth > self.max_depth {
+            self.max_depth = other.max_depth
+        };
         self.line_count += other.line_count;
         self
     }
 }
 
-fn collect_summary(nodes: &[WithSpan<ProofNode>]) -> Summary {
+fn collect_summary(nodes: &[WithSpan<ParsedProofNode>]) -> Summary {
     let mut line_count = 0;
     let mut rules_used = initial_table();
     let mut max_depth = 0;
-    
+
     // collect the table of all the used rules and the max depth
     for line in nodes.iter().filter_map(|node| node.value().as_numbered()) {
         line_count += 1;
-        if line.depth > max_depth { max_depth = line.depth };
-        if let Some(justification) = line.justification() {
+        if line.depth > max_depth {
+            max_depth = line.depth
+        };
+        if let Some(justification) = &line.justification {
             let (connective, direction) = justification.rule_used();
-            if let Some((_, stats))
-                = rules_used.iter_mut().find(|(c, _)| *c == connective) {
+            if let Some((_, stats)) = rules_used.iter_mut().find(|(c, _)| *c == connective) {
                 if let Some((_, count)) = stats.iter_mut().find(|(d, _)| *d == direction) {
                     *count += 1;
                 }
             }
         }
     }
-    Summary { table : rules_used, line_count, max_depth }
+    Summary {
+        table: rules_used,
+        line_count,
+        max_depth,
+    }
 }
 
+fn print_summary(s: Summary) {
+    let Summary {
+        table: rules_used,
+        line_count,
+        max_depth,
+    } = s;
 
-fn print_summary(s : Summary) {    
-    let Summary { table: rules_used, line_count, max_depth } = s;
-
-    const TABLE_PRESET: &str = "││──╞══╡ ──├┤──┌┐└┘";    
+    const TABLE_PRESET: &str = "││──╞══╡ ──├┤──┌┐└┘";
     let mut table = Table::new();
     table.load_preset(TABLE_PRESET);
     table.set_header(vec![
@@ -96,7 +108,7 @@ fn print_summary(s : Summary) {
             } else {
                 Color::Red
             }));
-        }        
+        }
         table.add_row(row);
     }
 
@@ -106,7 +118,11 @@ fn print_summary(s : Summary) {
 }
 
 pub fn summaries_files(files: &Vec<String>) {
-    let mut summary = Summary { table: initial_table(), line_count: 0, max_depth: 0 };
+    let mut summary = Summary {
+        table: initial_table(),
+        line_count: 0,
+        max_depth: 0,
+    };
 
     for proof_file in files {
         let Ok(proof) = std::fs::read_to_string(proof_file) else {
