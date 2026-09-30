@@ -17,6 +17,9 @@ pub use crate::loc::{Location, Span, WithSpan};
 pub use parser::parse_fitch_proof;
 pub use parser::parse_logical_expression_string;
 
+/// by default we use a,b,c for constants and x,y,z for variables
+pub const DEFAULT_ALLOWED_VARIABLE_NAMES: &str = "x,y,z,u,v,w";
+
 fn set_js_property(object: &Object, name: &str, value: &JsValue) {
     Reflect::set(object, &JsValue::from_str(name), value)
         .expect("setting a property on a newly created JavaScript object should succeed");

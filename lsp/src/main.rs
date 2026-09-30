@@ -14,9 +14,6 @@ struct Args {
     debug: bool,
 }
 
-/// by default we use a,b,c for constants and x,y,z for variables
-const DEFAULT_ALLOWED_VARIABLE_NAMES: &str = "x,y,z,u,v,w";
-
 #[derive(Debug)]
 struct Document {
     text: String,
@@ -196,7 +193,7 @@ impl LanguageServer for Backend {
             .get(&params.text_document.uri)
             .iter()
             .map(|document| {
-                fitch_proof::check_proof_diagnostics(&document.text, DEFAULT_ALLOWED_VARIABLE_NAMES)
+                fitch_proof::check_proof_diagnostics(&document.text, fitch_proof::DEFAULT_ALLOWED_VARIABLE_NAMES)
             })
             .flat_map(|d| diagnostic_to_lsp(&params.text_document.uri, d))
             .collect();
