@@ -1,6 +1,6 @@
 use crate::data::*;
 use crate::formatter;
-use crate::loc::{Location, WithLoc};
+use crate::loc::Span;
 use crate::proof::*;
 use crate::util;
 use std::collections::{HashMap, HashSet};
@@ -62,10 +62,7 @@ impl Proof {
         // Note: don't remove this check on the length of `template`. It would cause some panics
         // below if the length is zero.
         if template.is_empty() {
-            return ProofResult::FatalError(Diagnostic {
-                message: "The proof template is empty. This should not be! If you see this on Themis as a student, please contact the course staff as soon as possible. Something is wrong on our side. Thanks!".to_owned(),
-                location: None,
-            });
+            return ProofResult::FatalError(Diagnostic::new("The proof template is empty. This should not be! If you see this on Themis as a student, please contact the course staff as soon as possible. Something is wrong on our side. Thanks!", Span::dummy()));
         }
 
         // template matching errors that we will be accumulating.
@@ -76,9 +73,9 @@ impl Proof {
             let mut premises_in_proof =
                 self.nodes.iter().take_while(|node| !node.is_fitch_bar()).filter_map(|node| {
                     match node.value() {
-                        ProofNode::Numbered(line) => {
-                            line.sentence().map(|sentence| (sentence, node.location()))
-                        }
+                        ProofNode::Numbered(line) => line
+                            .sentence_with_loc()
+                            .map(|sentence| (sentence.value(), sentence.span())),
                         _ => None,
                     }
                 });
@@ -88,25 +85,24 @@ impl Proof {
             let first_mismatch = loop {
                 match (premises_in_proof.next(), premises_in_template.next()) {
                     (Some((actual, _)), Some(expected)) if actual == expected => continue,
-                    (Some((_, location)), _) => break Some(location.clone()),
+                    (Some((_, span)), _) => break Some(span.clone()),
                     (None, Some(_)) => {
-                        // return the location of the fitch bar if the premises are exhaused
+                        // return the span of the fitch bar if the premises are exhaused
                         break self
                             .nodes
                             .iter()
                             .find(|node| node.is_fitch_bar())
-                            .map(|node| node.location.clone());
+                            .map(|node| node.span.clone());
                     }
                     (None, None) => break None,
                 }
             };
 
-            if let Some(location) = first_mismatch {
-                template_errors.push(Diagnostic {
-                    message: "The premises of your proof do not match the premises in the proof template."
-                        .to_owned(),
-                    location: Some(location),
-                });
+            if let Some(span) = first_mismatch {
+                template_errors.push(Diagnostic::new(
+                    "The premises of your proof do not match the premises in the proof template.",
+                    span,
+                ));
             }
         }
 
@@ -118,20 +114,17 @@ impl Proof {
             });
             match conclusion_in_proof {
                 None => {
-                    template_errors.push(Diagnostic {
-                        message: "It seems that your proof has no sentences in it.".to_owned(),
-                        location: None,
-                    });
+                    template_errors.push(Diagnostic::new(
+                        "It seems that your proof has no sentences in it.",
+                        Span::dummy(),
+                    ));
                 }
                 Some(concl) => {
                     // both unwraps work (note that we checked the length of `template`)
                     if concl != template.last().unwrap() {
-                        template_errors.push(Diagnostic {
-                            message: "The conclusion of your proof does not match the conclusion in the proof template.".to_owned(),
-                            location: self
-                                .last_numbered_node()
-                                .map(|node| node.location.clone()),
-                        });
+                        template_errors.push(Diagnostic::new("The conclusion of your proof does not match the conclusion in the proof template.", self
+                            .last_numbered_node()
+                            .map(|node| node.span.clone()).unwrap_or_else(Span::dummy)));
                     }
                 }
             }
@@ -149,15 +142,23 @@ impl Proof {
             }
             // If there were any template mathing errors, change the Correct into Error. Otherwise
             // it stays Correct.
-            ProofResult::Correct => {
+            ProofResult::Correct(span) => {
                 if template_errors.is_empty() {
-                    ProofResult::Correct
+                    ProofResult::Correct(span)
                 } else {
                     ProofResult::Error(template_errors)
                 }
             }
         }
     }
+
+    fn last_sentence(&self) -> Option<&LWff> {
+        self.nodes.iter().rev().find_map(|node| match node.value() {
+            ProofNode::Numbered(line) => line.sentence_with_loc(),
+            _ => None,
+        })
+    }
+
     /// Given a [Proof], this function checks if it is fully correct.
     ///
     /// When you want to fully assess the validity of a proof, you should first [Proof::construct] the proof, and then run this function.
@@ -184,50 +185,40 @@ impl Proof {
                 } => break,
                 ProofNode::Numbered(line) => {
                     if line.is_inference() {
-                        errors.push(Diagnostic {
-                            message: format!("Line {}: inferences are not allowed in the premises", line.line_num).to_string(),
-                            location: Some(node.location.clone())
-                        });
+                        errors.push(Diagnostic::new(
+                            "inferences are not allowed in the premises",
+                            node.span.clone(),
+                        ));
                     }
                     if line.introduces_boxed_constant() {
-                        errors.push(Diagnostic {
-                            message: format!("Line {}: boxed constants are not allowed in the premises", line.line_num).to_string(),
-                            location: line
-                                .boxed_constant_loc()
-                                .cloned()
-                                .or_else(|| Some(node.location.clone()))
-                        });
+                        errors.push(Diagnostic::new(
+                            "boxed constants are not allowed in the premises",
+                            line.boxed_constant_span().unwrap_or_else(|| node.span.clone()),
+                        ));
                         // break;
                     }
                 }
                 _ => {}
             }
         }
-        if !seen_fitch_bar  {
-            errors.push(Diagnostic {
-                message: "Each proof should start start with zero or more premises, followed by a Fitch bar"
+        if !seen_fitch_bar {
+            errors.push(Diagnostic::new(
+                "Each proof should start start with zero or more premises, followed by a Fitch bar"
                     .to_string(),
-                location: None
-            });
+                Span::dummy(),
+            ));
         }
         // check that user applied proof rule correctly everywhere
         for node in self.nodes() {
             if let ProofNode::Numbered(line) = node.value() {
-                // TODO: more precise location information from check_line()
-                if let Err(message) = self.check_line(line) {
-                    errors.push(Diagnostic {
-                        message,
-                        location: Some(node.location.clone()),
-                    });
+                if let Err(diag) = self.check_line(line) {
+                    errors.push(diag);
                 }
             }
         }
 
         // check that all inferences have justification
-        errors.extend(self.lines_missing_justification().into_iter().map(|line_num| Diagnostic {
-            message: format!("Line {}: missing justification", line_num.value()),
-            location: Some(line_num.location),
-        }));
+        errors.extend(self.missing_justification_diagnostics());
 
         // check that all variables are bound, that user doesn't have nested quantifiers over the
         // same variable and that users don't quantify over a constant, and that the user does not make
@@ -238,10 +229,7 @@ impl Proof {
                 return None;
             };
             line.sentence_with_loc()
-                .and_then(|wff|
-                          self
-                          .check_variable_scoping_naming_issues(wff, line.line_num)
-                          .err())
+                .and_then(|wff| self.check_variable_scoping_naming_issues(wff, line.line_num).err())
         }));
 
         // check that user does not use a symbol to denote both a constant and a function, and that
@@ -260,14 +248,17 @@ impl Proof {
             // if the proof is empty the check above returns false
             // so it is safe to unwrap the last_line_num
             let lln = self.last_line_num().unwrap();
-            errors.push(Diagnostic {
-                message: format!("Line {lln}: last line of proof should not be inside subproof"),
-                location: self.last_numbered_node().map(|node| node.location.clone()),
-            });
+            errors.push(Diagnostic::new(
+                format!("Line {lln}: last line of proof should not be inside subproof"),
+                self.last_numbered_node().unwrap().span.clone(),
+            ));
         }
 
         if errors.is_empty() {
-            ProofResult::Correct
+            let conclusion =
+                self.last_sentence().expect("a correct proof should contain a sentence");
+
+            ProofResult::Correct(conclusion.span.clone())
         } else {
             util::natural_sort(&mut errors);
             ProofResult::Error(errors)
@@ -277,9 +268,10 @@ impl Proof {
     /// This function returns the located line numbers corresponding to "premises"
     /// that are found between a Fitch bar line and a SubproofOpen.
     /// (these would be the inferences with missing justification, but they are parsed as premises)
-    fn lines_missing_justification(&self) -> Vec<WithLoc<usize>> {
-        let mut res = vec![]; // store what we're going to return
+    fn missing_justification_diagnostics(&self) -> Vec<Diagnostic> {
+        let mut diagnostics = vec![];
         let mut expect_justification = false;
+
         for node in self.nodes() {
             match node.value() {
                 ProofNode::FitchBar {
@@ -287,26 +279,34 @@ impl Proof {
                 } => {
                     expect_justification = true;
                 }
+
                 ProofNode::SubproofOpen {
                     ..
                 } => {
                     expect_justification = false;
                 }
+
                 ProofNode::SubproofClose {
                     ..
                 }
                 | ProofNode::Empty {
                     ..
                 } => {}
+
                 ProofNode::Numbered(line) => {
                     if expect_justification && !line.is_inference() {
-                        res.push(WithLoc::new(line.line_num, node.location.clone()));
+                        let span = line
+                            .sentence_with_loc()
+                            .map(|sentence| sentence.span.clone())
+                            .unwrap_or_else(|| node.span.clone());
+
+                        diagnostics.push(Diagnostic::new("missing justification", span));
                     }
                 }
             }
         }
 
-        res
+        diagnostics
     }
 
     /// This function returns true if and only if the last line (that has a line number) is inside a subproof
@@ -341,13 +341,9 @@ impl Proof {
                         if self.term_is_constant(bc) {
                             None
                         } else {
-                            Some(Diagnostic {
-                                message: format!(
-                                    "Line {}: a boxed constant cannot be a variable (should not have the name of a variable).",
-                                    line.line_num
-                                ),
-                                location: line.boxed_constant_loc().cloned(),
-                            })
+                            Some(Diagnostic::new(
+                                "a boxed constant cannot be a variable (should not have the name of a variable).",
+                             line.boxed_constant_span().unwrap_or_else(Span::dummy)))
                         }
                     })
                 }),
@@ -378,10 +374,7 @@ impl Proof {
                         "Internal error: introduces_boxed_constant returned true but boxed_constant missing",
                     );
                     if currently_in_scope.iter().filter_map(|opt| opt.as_ref()).any(|t| *t == bc) {
-                        errors.push(Diagnostic {
-                            message: format!("Line {}: you cannot introduce the same boxed constant twice in nested subproofs", line.line_num),
-                            location: line.boxed_constant_loc().cloned(),
-                        });
+                        errors.push(Diagnostic::new("you cannot introduce the same boxed constant twice in nested subproofs", line.boxed_constant_span().unwrap_or_else(Span::dummy)));
                     }
                     currently_in_scope.push(Some(bc));
                     // if the line introducing a boxed constant also contains a formula
@@ -462,10 +455,7 @@ impl Proof {
                                 .filter_map(|x| x.as_ref())
                                 .any(|t| t == term.value())
                         {
-                            Err(Diagnostic {
-                                message: format!("Line {line_num}: it is not allowed to use a boxed constant outside the subproof that defines it"),
-                                location: Some(term.location.clone()),
-                            })
+                            Err(Diagnostic::new(format!("Line {line_num}: it is not allowed to use a boxed constant outside the subproof that defines it"), term.span.clone()))
                         } else {
                             Ok(())
                         }
@@ -590,18 +580,15 @@ impl Proof {
                 )),
                 Wff::Forall(var, body) | Wff::Exists(var, body) => {
                     if !proof.allowed_variable_names.contains(var) {
-                        Err(Diagnostic {
-                            message: format!("Line {line_num}: you can only quantify over a variable, not over a constant."),
-                            location: Some(wff.location.clone()),
-                        })
+                        Err(Diagnostic::new(format!("Line {line_num}: you can only quantify over a variable, not over a constant."), wff.span.clone()))
                     } else if bound_vars_in_scope.contains(var) {
-                        Err(Diagnostic {
-                            message: format!(
+                        Err(Diagnostic::new(
+                            format!(
                                 "Line {line_num}: this line contains \
-                                       two nested quantifiers over the same variable."
+                                   two nested quantifiers over the same variable."
                             ),
-                            location: Some(wff.location.clone()),
-                        })
+                            wff.span.clone(),
+                        ))
                     } else {
                         bound_vars_in_scope.push(var.to_string());
                         let res = check_variable_scoping_naming_issues_helper(
@@ -628,10 +615,10 @@ impl Proof {
                     if proof.allowed_variable_names.contains(str)
                         && !bound_vars_in_scope.contains(str)
                     {
-                        Err(Diagnostic {
-                            message: format!("Line {line_num}: this line contains unbound variables."),
-                            location: Some(term.location.clone()),
-                        })
+                        Err(Diagnostic::new(
+                            format!("Line {line_num}: this line contains unbound variables."),
+                            term.span.clone(),
+                        ))
                     } else {
                         Ok(())
                     }
@@ -647,13 +634,13 @@ impl Proof {
                         )
                     })
                     .and(if proof.allowed_variable_names.contains(name) {
-                        Err(Diagnostic {
-                            message: format!(
+                        Err(Diagnostic::new(
+                            format!(
                                 "Line {line_num}: you cannot have a function called \
-                                     {name}, because {name} is a reserved name for variables."
+                                 {name}, because {name} is a reserved name for variables."
                             ),
-                            location: Some(term.location.clone()),
-                        })
+                            term.span.clone(),
+                        ))
                     } else {
                         Ok(())
                     }),
@@ -668,48 +655,34 @@ impl Proof {
     /// if for example the user uses some letter both as a constant name and a function name.
     fn generate_arity_errors(&self) -> Vec<Diagnostic> {
         let mut errors: Vec<Diagnostic> = vec![];
-        let mut arity_map: HashMap<String, Vec<(usize, Location)>> = HashMap::from([]);
-        for ((name, arity), location) in self.get_arity_set() {
+        let mut arity_map: HashMap<String, Vec<(usize, Span)>> = HashMap::from([]);
+        for ((name, arity), span) in self.get_arity_set() {
             if !arity_map.contains_key(&name) {
                 arity_map.insert(name.to_string(), vec![]);
             }
             // the previous check makes it safe to unwrap() here
-            arity_map.get_mut(&name).unwrap().push((arity, location));
+            arity_map.get_mut(&name).unwrap().push((arity, span));
         }
         for (name, mut arities_loc) in arity_map {
             arities_loc.sort_by_key(|(arity, _)| *arity);
-            let arities: Vec<usize> = arities_loc
-                .iter()
-                .map(|(arity, _)| *arity)
-                .collect();
+            let arities: Vec<usize> = arities_loc.iter().map(|(arity, _)| *arity).collect();
             // we know that if a variable name appears in an arity map, then there is at least one arity associated with it
             if arities.is_empty() {
                 panic!("The list of arities is empty -- this should not happen!");
             }
             if arities.len() > 1 {
-                let location = arities_loc.first().map(|(_, loc)| loc.clone());
+                let span =
+                    arities_loc.first().map(|(_, loc)| loc.clone()).unwrap_or_else(Span::dummy);
                 if arities.contains(&0) {
                     if name.chars().next().unwrap().is_lowercase() {
-                        errors.push(Diagnostic {
-                            message: format!("Error: it seems like you use the name \'{name}\' both to denote a constant, and to denote a function symbol"),
-                            location,
-                        });
+                        errors.push(Diagnostic::new(format!("Error: it seems like you use the name \'{name}\' both to denote a constant, and to denote a function symbol"), span));
                     } else {
-                        errors.push(Diagnostic {
-                            message: format!("Error: it seems like you use the name \'{name}\' both to denote a nullary predicate (\'no inputs\'), and to denote a non-nullary predicate"),
-                            location,
-                        });
+                        errors.push(Diagnostic::new(format!("Error: it seems like you use the name \'{name}\' both to denote a nullary predicate (\'no inputs\'), and to denote a non-nullary predicate"), span));
                     }
                 } else if name.chars().next().unwrap().is_lowercase() {
-                    errors.push(Diagnostic {
-                        message: format!("Error: it seems like \'{name}\' is meant to denote a function symbol, but throughout the proof, its arity is inconsistent. The found arities are {arities:?}"),
-                        location,
-                    })
+                    errors.push(Diagnostic::new(format!("Error: it seems like \'{name}\' is meant to denote a function symbol, but throughout the proof, its arity is inconsistent. The found arities are {arities:?}"), span))
                 } else {
-                    errors.push(Diagnostic {
-                        message: format!("Error: it seems like \'{name}\' is meant to denote a predicate, but throughout the proof, its arity is inconsistent. The found arities are {arities:?}"),
-                        location,
-                    })
+                    errors.push(Diagnostic::new(format!("Error: it seems like \'{name}\' is meant to denote a predicate, but throughout the proof, its arity is inconsistent. The found arities are {arities:?}"), span))
                 }
             }
         }
@@ -723,56 +696,47 @@ impl Proof {
     ///
     /// Note that if you find for example both f(x,x) and f(x,x,x) in the same proof, then BOTH the
     /// entries ("f", 2) and ("f", 3) will be included in the arity set.
-    fn get_arity_set(&self) -> HashMap<(String, usize), Location> {
+    fn get_arity_set(&self) -> HashMap<(String, usize), Span> {
         fn merge_arity_sets(
-            target: &mut HashMap<(String, usize), Location>,
-            source: HashMap<(String, usize), Location>) -> ()
-        {
-            for (key, location) in source {
-                target.entry(key).or_insert(location);
+            target: &mut HashMap<(String, usize), Span>,
+            source: HashMap<(String, usize), Span>,
+        ) -> () {
+            for (key, span) in source {
+                target.entry(key).or_insert(span);
             }
         }
 
-        fn get_arity_set_term(proof: &Proof, term: &LTerm) -> HashMap<(String, usize), Location> {
+        fn get_arity_set_term(proof: &Proof, term: &LTerm) -> HashMap<(String, usize), Span> {
             match term.value() {
                 Term::Atomic(str) => {
                     if proof.allowed_variable_names.contains(str) {
                         HashMap::from([])
                     } else {
-                        HashMap::from([((str.to_owned(), 0), term.location.clone())])
+                        HashMap::from([((str.to_owned(), 0), term.span.clone())])
                     }
                 }
                 Term::FuncApp(str, args) => {
                     let mut arities =
-                        HashMap::from([(
-                            (str.to_owned(), args.len()),
-                            term.location.clone())]);
+                        HashMap::from([((str.to_owned(), args.len()), term.span.clone())]);
                     for arg in args {
-                        merge_arity_sets(&mut arities,
-                                         get_arity_set_term(proof, arg));
+                        merge_arity_sets(&mut arities, get_arity_set_term(proof, arg));
                     }
                     arities
                 }
             }
         }
-        fn get_arity_set_wff(proof: &Proof, wff: &LWff) -> HashMap<(String, usize), Location> {
+        fn get_arity_set_wff(proof: &Proof, wff: &LWff) -> HashMap<(String, usize), Span> {
             match wff.value() {
                 Wff::Bottom => HashMap::from([]),
-                Wff::And(li)
-                  | Wff::Or(li) => {
+                Wff::And(li) | Wff::Or(li) => {
                     let mut arities = HashMap::from([]);
                     for child in li {
                         merge_arity_sets(&mut arities, get_arity_set_wff(proof, child));
                     }
                     arities
                 }
-                Wff::Forall(_, w)
-                  | Wff::Exists(_, w)
-                  | Wff::Not(w) => {
-                    get_arity_set_wff(proof, w)
-                }
-                Wff::Bicond(w1, w2)
-                  | Wff::Implies(w1, w2) => {
+                Wff::Forall(_, w) | Wff::Exists(_, w) | Wff::Not(w) => get_arity_set_wff(proof, w),
+                Wff::Bicond(w1, w2) | Wff::Implies(w1, w2) => {
                     let mut arities = get_arity_set_wff(proof, w1);
                     merge_arity_sets(&mut arities, get_arity_set_wff(proof, w2));
                     arities
@@ -783,17 +747,14 @@ impl Proof {
                     arities
                 }
                 Wff::PredApp(str, args) => {
-                    let mut arities = HashMap::from([(
-                        (str.to_owned(), args.len()),
-                        wff.location.clone(),
-                    )]);
+                    let mut arities =
+                        HashMap::from([((str.to_owned(), args.len()), wff.span.clone())]);
                     for arg in args {
                         merge_arity_sets(&mut arities, get_arity_set_term(proof, arg));
                     }
                     arities
                 }
-                Wff::Atomic(str) =>
-                    HashMap::from([((str.to_owned(), 0), wff.location.clone())]),
+                Wff::Atomic(str) => HashMap::from([((str.to_owned(), 0), wff.span.clone())]),
             }
         }
         self.numbered_lines()
@@ -803,13 +764,13 @@ impl Proof {
                 // also include boxed constants in arity set!
                 self.numbered_lines().filter_map(|line| line.boxed_constant_with_loc()).map(|c| {
                     match c.value() {
-                        Term::Atomic(str) => ((str.to_owned(), 0), c.location.clone()),
+                        Term::Atomic(str) => ((str.to_owned(), 0), c.span.clone()),
                         Term::FuncApp(..) => panic!("boxed constant cannot be FuncApp"),
                     }
                 }),
             )
-            .fold(HashMap::from([]), |mut arities, (key, location)| {
-                arities.entry(key).or_insert(location);
+            .fold(HashMap::from([]), |mut arities, (key, span)| {
+                arities.entry(key).or_insert(span);
                 arities
             })
     }
@@ -823,639 +784,850 @@ impl Proof {
         self.scope[n1].0.contains(&n2)
     }
 
-    /// Gets the [Wff] at some requested line number, and if this line does not exist or
-    /// does not contain a sentence then this function will return an `Err` containing
-    /// a relevant error message. The function will also give
-    /// an `Err` if the line is not allowed to be referenced from the referencing line (e.g. because
-    /// it is inside an already closed subproof).
+    /// Gets the located Wff referenced by `reference`.
+    ///
+    /// The span carried by `LineRef` points at the literal line number in the
+    /// justification. If the target line exists, its source span is attached as
+    /// related diagnostic information.
     fn get_wff_at_line(
         &self,
         referencing_line: usize,
-        requested_line: usize,
-    ) -> Result<&Wff, String> {
-        let line = self.find_numbered_line(requested_line);
-        if let Some(l) = line {
-            if let Some(wff) = l.sentence() {
-                if self.can_reference(referencing_line, requested_line) {
-                    Ok(wff)
-                } else if requested_line < referencing_line {
-                    Err(format!("Line {referencing_line}: line {requested_line} is referenced in the justification, but this is not allowed, because line {requested_line} is inside an already closed subproof."))
-                } else {
-                    Err(format!("Line {referencing_line}: line {requested_line} is referenced in the justification, but this is not allowed, because line {requested_line} does not come before line {referencing_line}."))
-                }
+        reference: &LineRef,
+    ) -> Result<&LWff, Diagnostic> {
+        let requested_line = reference.line;
+
+        let Some(node) = self.find_numbered_node(requested_line) else {
+            return Err(Diagnostic::new(
+                format!("line {requested_line} does not exist"),
+                reference.span.clone(),
+            ));
+        };
+
+        let ProofNode::Numbered(line) = node.value() else {
+            unreachable!("find_numbered_node returned a non-numbered node");
+        };
+
+        let Some(wff) = line.sentence_with_loc() else {
+            return Err(Diagnostic::new(
+                format!("line {requested_line} does not contain a sentence"),
+                reference.span.clone(),
+            )
+            .with_relation(format!("referenced line {requested_line}"), node.span.clone()));
+        };
+
+        if !self.can_reference(referencing_line, requested_line) {
+            let message = if requested_line < referencing_line {
+                format!(
+                    "line {requested_line} cannot be referenced because it is inside an already closed subproof"
+                )
             } else {
-                Err(format!("Line {referencing_line}: line {requested_line} is being referenced in the justification, but that line does not contain a sentence."))
-            }
-        } else {
-            Err(format!("Line {referencing_line}: line {requested_line} is being referenced in the justification, but that line does not exist."))
+                format!(
+                    "line {requested_line} cannot be referenced because it does not come before line {referencing_line}"
+                )
+            };
+
+            return Err(Diagnostic::new(message, reference.span.clone())
+                .with_relation(format!("referenced line {requested_line}"), node.span.clone()));
         }
+
+        Ok(wff)
     }
 
-    /// This function gets the premise and the conclusion of the
-    /// subproof that runs from line `subproof_begin` to line
-    /// `subproof_end`. It will return either `Ok(())` if the subproof
-    /// exists and is allowed to be referenced from
-    /// `referencing_line`. Otherwise, a relevant error message will
-    /// be returned.
+    /// Gets the premise and conclusion of a referenced subproof.
     ///
-    /// Example: if the requested subproof is inside an already closed subproof, then line
-    /// `referencing_line` is not allowed to reference this subproof and an error message will be
-    /// returned.
-    ///
-    /// Precondition: referencing_line is an existing line (and the scope needs to be computed
-    /// already, but that is always the case since we are working on an already-instantiated Proof
-    /// instance, and those cannot be created if their scope cannot be determined)
+    /// The `LineRef`s retain the exact source spans of both numeric literals in
+    /// the justification. On an invalid reference the first literal is the
+    /// primary diagnostic span; any existing target lines are added as related
+    /// information.
     fn get_subproof_at_lines(
         &self,
         referencing_line: usize,
-        (subproof_begin, subproof_end): (usize, usize),
-    ) -> Result<(&NumberedLine, &NumberedLine), String> {
+        (begin_ref, end_ref): (&LineRef, &LineRef),
+    ) -> Result<(&NumberedLine, &NumberedLine), Diagnostic> {
+        let subproof_begin = begin_ref.line;
+        let subproof_end = end_ref.line;
+
         if self.scope[referencing_line].1.contains(&(subproof_begin, subproof_end)) {
-            let s_begin = self.find_numbered_line(subproof_begin).unwrap();
-            // the unwrap should work, since `scope` should refer only to valid line numbers
-            let s_end = self.find_numbered_line(subproof_end).unwrap();
-            Ok((s_begin, s_end))
-        } else {
-            Err(format!(
-                "Line {referencing_line}: the referenced \
-                        subproof {subproof_begin}-{subproof_end} is \
-                        not in the scope of line {referencing_line}, \
-                        or it does not exist."
-            ))
+            let s_begin = self
+                .find_numbered_line(subproof_begin)
+                .expect("scope contains a non-existing subproof start line");
+            let s_end = self
+                .find_numbered_line(subproof_end)
+                .expect("scope contains a non-existing subproof end line");
+            return Ok((s_begin, s_end));
         }
+
+        let mut diagnostic = Diagnostic::new(
+            format!(
+                "the referenced subproof {subproof_begin}-{subproof_end} is not in the scope of line {referencing_line}, or it does not exist"
+            ),
+            begin_ref.span.clone(),
+        );
+
+        if let Some(node) = self.find_numbered_node(subproof_begin) {
+            diagnostic = diagnostic.with_relation(
+                format!("referenced subproof starts at line {subproof_begin}"),
+                node.span.clone(),
+            );
+        }
+        if subproof_end != subproof_begin {
+            if let Some(node) = self.find_numbered_node(subproof_end) {
+                diagnostic = diagnostic.with_relation(
+                    format!("referenced subproof ends at line {subproof_end}"),
+                    node.span.clone(),
+                );
+            }
+        }
+
+        Err(diagnostic)
     }
 
-    /// This function checks the logical validity of a particular proof line within a proof
-    /// i.e., checks if the proof rule in the given line has been applied correctly.
-    ///
-    /// This function will return `Ok(())` if the proof rule in the given line has been applied
-    /// correctly. It will also return `Ok(())` if the given line is a premise, or a Fitch bar
-    /// line, or an empty line, since in those cases there is no justification to check.
-    ///
-    /// Note that the provided [NumberedLine] should exist in the proof!
-    fn check_line(&self, line: &NumberedLine) -> Result<(), String> {
-        let curr_line_num = line.line_num;
-
-        // if there is no justification we skip
-        if line.justification().is_none() {
+    /// Checks the logical validity of one numbered proof line.
+    fn check_line(&self, line: &NumberedLine) -> Result<(), Diagnostic> {
+        let Some(just) = line.justification() else {
             return Ok(());
-        }
-        let just = line.justification().unwrap();
+        };
 
-        // if there is no Wff then we should also skip
-        if line.sentence().is_none() {
-            return Err(format!("Line: {curr_line_num}: no formula present"));
-        }
-        let curr_wff = line.sentence().unwrap();
+        let Some(curr_wff) = line.sentence_with_loc() else {
+            return Err(Diagnostic::new(
+                "no formula present",
+                line.justification_span().unwrap_or_else(Span::dummy),
+            ));
+        };
+
+        let here = |message: String| Diagnostic::new(message, curr_wff.span.clone());
+
+        let referenced = |message: String, reference: &LineRef, wff: &LWff| {
+            Diagnostic::new(message, reference.span.clone())
+                .with_relation(format!("referenced line {}", reference.line), wff.span.clone())
+        };
 
         match just {
             Justification::Reit(n) => {
-                let ref_wff = self.get_wff_at_line(curr_line_num, *n)?;
-                if curr_wff == ref_wff {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                if curr_wff.value() == ref_wff.value() {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the \
-                                           proof rule Reit is used, but the sentence \
-                                           in this line is not the same as the sentence \
-                                           in the referenced line."
+                    Err(referenced(
+                        "the proof rule Reit is used, but this sentence is not the same as the referenced sentence".to_string(),
+                        n,
+                        ref_wff,
                     ))
                 }
             }
+
             Justification::AndIntro(ns) => {
-                if let Wff::And(conjs) = curr_wff {
-                    if ns.len() != conjs.len() {
-                        return Err(format!(
-                            "Line {curr_line_num}: the rule ∧Intro is used, but the number of \
-                            conjuncts ({}) of the sentence in line {curr_line_num} is not equal \
-                            to the number of referenced proof lines ({}).",
-                            conjs.len(),
-                            ns.len()
-                        ));
-                    }
-                    for i in 0..ns.len() {
-                        if conjs[i].value() != self.get_wff_at_line(curr_line_num, ns[i])? {
-                            return Err(format!(
-                                "Line {curr_line_num}: the rule ∧Intro is used, but the {}\'th \
-                                conjunct of the sentence in that line is not the same as \
-                                the sentence found in line {} (the {}\'th \
-                                line referenced in the justification).",
-                                i + 1,
-                                ns[i],
-                                i + 1
-                            ));
-                        }
-                    }
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the justification ∧Intro is \
-                                used, but the top-level connective of this line is not ∧."
-                    ))
-                }
-            }
-            Justification::AndElim(n) => {
-                let ref_wff = self.get_wff_at_line(curr_line_num, *n)?;
-                if let Wff::And(conjs) = ref_wff {
-                    if conjs.iter().any(|conj| conj.value() == curr_wff) {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "Line {curr_line_num}: the justification \
-                            ∧Elim: {n} is used, but none of the \
-                            conjuncts in line {n} is identical \
-                            to the sentence found in line {curr_line_num}."
-                        ))
-                    }
-                } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the justification \
-                        ∧Elim: {n} is used, but the top-level \
-                        connective of line {n} is not a conjunction."
-                    ))
-                }
-            }
-            Justification::OrIntro(n) => {
-                let ref_wff = self.get_wff_at_line(curr_line_num, *n)?;
-                if let Wff::Or(disjs) = curr_wff {
-                    if disjs.iter().any(|disj| disj.value() == ref_wff) {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "Line {curr_line_num}: the justification \
-                            ∨Intro: {n} is used, but none of the \
-                            disjuncts in line {curr_line_num} is identical \
-                            to the sentence found in line {n}."
-                        ))
-                    }
-                } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the justification \
-                        ∨Intro is used, but the top-level \
-                        connective of this line is not a disjunction."
-                    ))
-                }
-            }
-            Justification::OrElim(n, subproofs) => {
-                let Wff::Or(disjs) = self.get_wff_at_line(curr_line_num, *n)? else {
-                    return Err(format!(
-                        "Line {curr_line_num}: ∨Elim: {n}, ..... \
-                        is used, but the top-level connective of \
-                        the sentence at line {n} is not ∨."
+                let Wff::And(conjs) = curr_wff.value() else {
+                    return Err(here(
+                        "the justification ∧Intro is used, but the top-level connective of this line is not ∧".to_string(),
                     ));
                 };
-                if disjs.len() != subproofs.len() {
-                    return Err(format!(
-                        "Line {curr_line_num}: the rule ∨Elim: {n}, ..... \
-                            is used, but the number of disjuncts ({}) \
-                            of the sentence in line {n} is not equal to \
-                            the number of referenced subproofs ({}).",
-                        disjs.len(),
-                        subproofs.len()
-                    ));
+
+                if ns.len() != conjs.len() {
+                    return Err(here(format!(
+                        "the rule ∧Intro is used, but the number of conjuncts ({}) is not equal to the number of referenced proof lines ({})",
+                        conjs.len(),
+                        ns.len(),
+                    )));
                 }
-                for (disj, subprf) in zip(disjs, subproofs) {
-                    let (s_begin, s_end) = self.get_subproof_at_lines(curr_line_num, *subprf)?;
-                    if s_begin.boxed_constant().is_some() {
-                        return Err(format!(
-                            "Line {curr_line_num}: when using ∨Elim, \
-                            you cannot reference subproofs which \
-                            introduce a boxed constant."
-                        ));
-                    }
-                    let Some(s_begin_wff) = s_begin.sentence() else {
-                        return Err(format!(
-                            "Line {curr_line_num}: when using ∨Elim, the referenced subproofs \
-                            must start with a sentence."
-                        ));
-                    };
-                    let Some(s_end_wff) = s_end.sentence() else {
-                        return Err(format!(
-                            "Line {curr_line_num}: when using ∨Elim, the referenced subproofs \
-                            must end with a sentence."
-                        ));
-                    };
-                    if disj.value() != s_begin_wff {
-                        return Err(format!(
-                            "Line {curr_line_num}: ∨Elim: {n}, ..... \
-                            is used, but the premise of one of the \
-                            referenced subproofs does not match the \
-                            corresponding disjunct of the sentence at line {n}. \
-                            Note that the subproofs should be referenced in the \
-                            order in which their corresponding premises \
-                            appear as disjuncts in the sentence at line {n}."
-                        ));
-                    }
-                    if s_end_wff != curr_wff {
-                        return Err(format!(
-                            "Line {curr_line_num}: ∨Elim \
-                            is used, but not all referenced subproofs end with \
-                            the same sentence as the sentence in line {curr_line_num}."
+
+                for (i, (conj, reference)) in zip(conjs, ns).enumerate() {
+                    let ref_wff = self.get_wff_at_line(line.line_num, reference)?;
+                    if conj.value() != ref_wff.value() {
+                        return Err(referenced(
+                            format!(
+                                "the {}th conjunct is not the same as the sentence referenced by the {}th line reference",
+                                i + 1,
+                                i + 1,
+                            ),
+                            reference,
+                            ref_wff,
                         ));
                     }
                 }
                 Ok(())
             }
-            Justification::ImpliesIntro((n, m)) => {
-                let Wff::Implies(a, b) = curr_wff else {
-                    return Err(format!(
-                        "Line {curr_line_num}: →Intro is used, but \
-                            the top-level connective of the sentence at this line \
-                            is not an implication."
+
+            Justification::AndElim(n) => {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::And(conjs) = ref_wff.value() else {
+                    return Err(referenced(
+                        format!(
+                            "∧Elim references line {}, but its top-level connective is not a conjunction",
+                            n.line
+                        ),
+                        n,
+                        ref_wff,
                     ));
                 };
-                let (s_begin, s_end) = self.get_subproof_at_lines(curr_line_num, (*n, *m))?;
-                if let (Some(s_begin_wff), Some(s_end_wff), None) =
-                    (s_begin.sentence(), s_end.sentence(), s_begin.boxed_constant())
-                {
-                    if a.value() != s_begin_wff && b.value() == s_end_wff {
-                        Err(format!(
-                            "Line {curr_line_num}: →Intro is used, but \
-                                the premise of the referenced subproof does not match the \
-                                antecedent of the implication found in line {curr_line_num}."
-                        ))
-                    } else if a.value() == s_begin_wff && b.value() != s_end_wff {
-                        Err(format!(
-                            "Line {curr_line_num}: →Intro is used, but \
-                                the last sentence of the referenced subproof does not match the \
-                                consequent of the implication found in line {curr_line_num}."
-                        ))
-                    } else if a.value() != s_begin_wff && b.value() != s_end_wff {
-                        Err(format!(
-                            "Line {curr_line_num}: →Intro is used, but \
-                                the premise and last sentence of the referenced subproof \
-                                do not match the antecedent and the consequent, respectively, \
-                                of the implication found in line {curr_line_num}."
-                        ))
-                    } else {
-                        Ok(())
-                    }
+
+                if conjs.iter().any(|conj| conj.value() == curr_wff.value()) {
+                    Ok(())
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: when using →Intro, you \
-                        cannot reference a subproof that introduces a boxed constant."
+                    Err(referenced(
+                        format!(
+                            "none of the conjuncts in line {} is identical to the sentence found in line {}",
+                            n.line, line.line_num
+                        ),
+                        n,
+                        ref_wff,
                     ))
                 }
             }
+
+            Justification::OrIntro(n) => {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Or(disjs) = curr_wff.value() else {
+                    return Err(here(
+                        "the justification ∨Intro is used, but the top-level connective of this line is not a disjunction".to_string(),
+                    ));
+                };
+
+                if disjs.iter().any(|disj| disj.value() == ref_wff.value()) {
+                    Ok(())
+                } else {
+                    Err(referenced(
+                        format!(
+                            "none of the disjuncts is identical to the sentence found in line {}",
+                            n.line
+                        ),
+                        n,
+                        ref_wff,
+                    ))
+                }
+            }
+
+            Justification::OrElim(n, subproofs) => {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Or(disjs) = ref_wff.value() else {
+                    return Err(referenced(
+                        format!(
+                            "∨Elim references line {}, but its top-level connective is not ∨",
+                            n.line
+                        ),
+                        n,
+                        ref_wff,
+                    ));
+                };
+
+                if disjs.len() != subproofs.len() {
+                    return Err(referenced(
+                        format!(
+                            "the number of disjuncts ({}) in line {} is not equal to the number of referenced subproofs ({})",
+                            disjs.len(),
+                            n.line,
+                            subproofs.len(),
+                        ),
+                        n,
+                        ref_wff,
+                    ));
+                }
+
+                for (disj, (sb, se)) in zip(disjs, subproofs) {
+                    let (s_begin, s_end) = self.get_subproof_at_lines(line.line_num, (sb, se))?;
+
+                    if s_begin.boxed_constant().is_some() {
+                        return Err(Diagnostic::new(
+                            "when using ∨Elim, referenced subproofs may not introduce a boxed constant".to_string(),
+                            sb.span.clone(),
+                        ));
+                    }
+
+                    let Some(s_begin_wff) = s_begin.sentence_with_loc() else {
+                        return Err(Diagnostic::new(
+                            "when using ∨Elim, each referenced subproof must start with a sentence"
+                                .to_string(),
+                            sb.span.clone(),
+                        ));
+                    };
+                    let Some(s_end_wff) = s_end.sentence_with_loc() else {
+                        return Err(Diagnostic::new(
+                            "when using ∨Elim, each referenced subproof must end with a sentence"
+                                .to_string(),
+                            se.span.clone(),
+                        ));
+                    };
+
+                    if disj.value() != s_begin_wff.value() {
+                        return Err(
+                            Diagnostic::new(
+                                "the premise of a referenced subproof does not match its corresponding disjunct".to_string(),
+                                sb.span.clone(),
+                            )
+                            .with_relation(
+                                format!("subproof premise at line {}", sb.line),
+                                s_begin_wff.span.clone(),
+                            )
+                            .with_relation(
+                                format!("disjunction referenced at line {}", n.line),
+                                ref_wff.span.clone(),
+                            ),
+                        );
+                    }
+
+                    if s_end_wff.value() != curr_wff.value() {
+                        return Err(Diagnostic::new(
+                            "not all referenced subproofs end with the inferred sentence"
+                                .to_string(),
+                            se.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof conclusion at line {}", se.line),
+                            s_end_wff.span.clone(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+
+            Justification::ImpliesIntro((n, m)) => {
+                let Wff::Implies(a, b) = curr_wff.value() else {
+                    return Err(here(
+                        "→Intro is used, but the top-level connective of this sentence is not an implication".to_string(),
+                    ));
+                };
+
+                let (s_begin, s_end) = self.get_subproof_at_lines(line.line_num, (n, m))?;
+                let (Some(s_begin_wff), Some(s_end_wff), None) = (
+                    s_begin.sentence_with_loc(),
+                    s_end.sentence_with_loc(),
+                    s_begin.boxed_constant(),
+                ) else {
+                    return Err(Diagnostic::new(
+                        "when using →Intro, the referenced subproof must not introduce a boxed constant and must have a premise and conclusion".to_string(),
+                        n.span.clone(),
+                    ));
+                };
+
+                let antecedent_matches = a.value() == s_begin_wff.value();
+                let consequent_matches = b.value() == s_end_wff.value();
+
+                match (antecedent_matches, consequent_matches) {
+                    (true, true) => Ok(()),
+                    (false, true) => Err(
+                        Diagnostic::new(
+                            "the premise of the referenced subproof does not match the antecedent of the implication".to_string(),
+                            n.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof premise at line {}", n.line),
+                            s_begin_wff.span.clone(),
+                        ),
+                    ),
+                    (true, false) => Err(
+                        Diagnostic::new(
+                            "the conclusion of the referenced subproof does not match the consequent of the implication".to_string(),
+                            m.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof conclusion at line {}", m.line),
+                            s_end_wff.span.clone(),
+                        ),
+                    ),
+                    (false, false) => Err(
+                        Diagnostic::new(
+                            "the premise and conclusion of the referenced subproof do not match the antecedent and consequent of the implication".to_string(),
+                            n.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof premise at line {}", n.line),
+                            s_begin_wff.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof conclusion at line {}", m.line),
+                            s_end_wff.span.clone(),
+                        ),
+                    ),
+                }
+            }
+
             Justification::ImpliesElim(n, m) => {
-                if let Wff::Implies(wff1, wff2) = self.get_wff_at_line(curr_line_num, *n)? {
-                    let wff_m = self.get_wff_at_line(curr_line_num, *m)?;
-                    if wff_m == wff1.value() && wff2.value() == curr_wff {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "Line {curr_line_num}: the rule \
-                                               →Elim is wrongly used."
-                        ))
-                    }
+                let implication = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Implies(wff1, wff2) = implication.value() else {
+                    return Err(referenced(
+                        format!(
+                            "→Elim references line {}, but its top-level connective is not an implication",
+                            n.line
+                        ),
+                        n,
+                        implication,
+                    ));
+                };
+                let premise = self.get_wff_at_line(line.line_num, m)?;
+
+                if premise.value() == wff1.value() && wff2.value() == curr_wff.value() {
+                    Ok(())
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the rule \
-                                           →Elim: {n}, {m} is used, but the top-level \
-                                           connective of line {n} is not an implication."
-                    ))
+                    Err(here("→Elim is wrongly used".to_string())
+                        .with_relation(
+                            format!("implication at line {}", n.line),
+                            implication.span.clone(),
+                        )
+                        .with_relation(format!("premise at line {}", m.line), premise.span.clone()))
                 }
             }
+
             Justification::BicondIntro((sb1, se1), (sb2, se2)) => {
-                if let Wff::Bicond(p, q) = curr_wff {
-                    let (s_begin1, s_end1) =
-                        self.get_subproof_at_lines(curr_line_num, (*sb1, *se1))?;
-                    let (s_begin2, s_end2) =
-                        self.get_subproof_at_lines(curr_line_num, (*sb2, *se2))?;
-                    // Check that the referenced subproofs actually have sentences and not boxed constants
-                    if let (
-                        Some(s_begin_wff1),
-                        Some(s_end_wff1),
-                        Some(s_begin_wff2),
-                        Some(s_end_wff2),
-                        false,
-                    ) = (
-                        s_begin1.sentence(),
-                        s_end1.sentence(),
-                        s_begin2.sentence(),
-                        s_end2.sentence(),
-                        s_begin1.boxed_constant().is_some() || s_begin2.boxed_constant().is_some(),
-                    ) {
-                        if p.value() == s_begin_wff1
-                            && q.value() == s_end_wff1
-                            && p.value() == s_end_wff2
-                            && q.value() == s_begin_wff2
-                        {
-                            Ok(())
-                        } else {
-                            Err(format!("Line {curr_line_num}: when using ↔Intro to infer P↔Q, you must first cite the subproof that proves P→Q, and then the subproof that proves Q→P."))
-                        }
-                    } else {
-                        Err(format!("Line {curr_line_num}: when using ↔Intro, you cannot reference a subproof that introduces a boxed constant."))
-                    }
+                let Wff::Bicond(p, q) = curr_wff.value() else {
+                    return Err(here(
+                        "↔Intro is used, but the top-level connective of this sentence is not a bi-implication".to_string(),
+                    ));
+                };
+
+                let (s_begin1, s_end1) = self.get_subproof_at_lines(line.line_num, (sb1, se1))?;
+                let (s_begin2, s_end2) = self.get_subproof_at_lines(line.line_num, (sb2, se2))?;
+
+                let (Some(s_begin_wff1), Some(s_end_wff1), Some(s_begin_wff2), Some(s_end_wff2)) = (
+                    s_begin1.sentence_with_loc(),
+                    s_end1.sentence_with_loc(),
+                    s_begin2.sentence_with_loc(),
+                    s_end2.sentence_with_loc(),
+                ) else {
+                    return Err(Diagnostic::new(
+                        "↔Intro requires two subproofs with a premise and conclusion".to_string(),
+                        sb1.span.clone(),
+                    ));
+                };
+
+                if s_begin1.boxed_constant().is_some() || s_begin2.boxed_constant().is_some() {
+                    return Err(Diagnostic::new(
+                        "when using ↔Intro, referenced subproofs may not introduce a boxed constant".to_string(),
+                        sb1.span.clone(),
+                    ));
+                }
+
+                if p.value() == s_begin_wff1.value()
+                    && q.value() == s_end_wff1.value()
+                    && p.value() == s_end_wff2.value()
+                    && q.value() == s_begin_wff2.value()
+                {
+                    Ok(())
                 } else {
-                    Err(format!("Line {curr_line_num}: ↔Intro is used, but the top-level connective of this sentence is not a bi-implication."))
+                    Err(
+                        here("when using ↔Intro to infer P↔Q, cite first the subproof proving P→Q and then the subproof proving Q→P".to_string())
+                            .with_relation(
+                                format!("first subproof starts at line {}", sb1.line),
+                                s_begin_wff1.span.clone(),
+                            )
+                            .with_relation(
+                                format!("second subproof starts at line {}", sb2.line),
+                                s_begin_wff2.span.clone(),
+                            ),
+                    )
                 }
             }
+
             Justification::BicondElim(n, m) => {
-                if let Wff::Bicond(wff1, wff2) = self.get_wff_at_line(curr_line_num, *n)? {
-                    let wff_m = self.get_wff_at_line(curr_line_num, *m)?;
-                    let left_wff = wff1.value();
-                    let right_wff = wff2.value();
-                    if (wff_m == left_wff && right_wff == curr_wff) // eliminating using the LHS, getting the RHS
-                        || (wff_m == right_wff && left_wff == curr_wff)
-                    // the opposite
-                    {
-                        Ok(())
-                    } else {
-                        Err(format!("Line {curr_line_num}: the rule ↔Elim is wrongly used."))
-                    }
+                let bicond = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Bicond(wff1, wff2) = bicond.value() else {
+                    return Err(referenced(
+                        format!(
+                            "↔Elim references line {}, but its top-level connective is not a bi-implication",
+                            n.line
+                        ),
+                        n,
+                        bicond,
+                    ));
+                };
+                let premise = self.get_wff_at_line(line.line_num, m)?;
+                let left_wff = wff1.value();
+                let right_wff = wff2.value();
+
+                if (premise.value() == left_wff && right_wff == curr_wff.value())
+                    || (premise.value() == right_wff && left_wff == curr_wff.value())
+                {
+                    Ok(())
                 } else {
-                    Err(format!("Line {curr_line_num}: the rule ↔Elim: {n}, {m} is used, but the top-level connective of line {n} is not a bi-implication."))
+                    Err(here("↔Elim is wrongly used".to_string())
+                        .with_relation(
+                            format!("bi-implication at line {}", n.line),
+                            bicond.span.clone(),
+                        )
+                        .with_relation(format!("premise at line {}", m.line), premise.span.clone()))
                 }
             }
+
             Justification::NotIntro((n, m)) => {
-                let (s_begin, s_end) = self.get_subproof_at_lines(curr_line_num, (*n, *m))?;
-                if let Wff::Not(negated) = curr_wff {
-                    if let (Some(s_begin_wff), Some(s_end_wff)) =
-                        (s_begin.sentence(), s_end.sentence())
-                    {
-                        if negated.value() == s_begin_wff {
-                            if *s_end_wff == Wff::Bottom {
-                                Ok(())
-                            } else {
-                                Err(format!(
-                                    "Line {curr_line_num}: ¬Intro is used, \
-                                    but the last sentence in the referenced \
-                                    subproof is not ⊥."
-                                ))
-                            }
-                        } else {
-                            Err(format!(
-                                "Line {curr_line_num}: ¬Intro is \
-                                            used, but the negation of the premise \
-                                            of the referenced subproof does \
-                                            not match this line."
-                            ))
-                        }
-                    } else {
-                        Err(format!(
-                            "Line {curr_line_num}: ¬Intro is \
-                            used, but the referenced subproof is not \
-                            of the proper form. You cannot use ¬Intro \
-                            on a subproof that introduces a boxed constant."
-                        ))
-                    }
-                } else {
-                    Err(format!(
-                        "Line {curr_line_num}: ¬Intro is used, \
-                        but the top-level connective of the sentence in this line is not ¬."
-                    ))
+                let Wff::Not(negated) = curr_wff.value() else {
+                    return Err(here(
+                        "¬Intro is used, but the top-level connective of this sentence is not ¬"
+                            .to_string(),
+                    ));
+                };
+
+                let (s_begin, s_end) = self.get_subproof_at_lines(line.line_num, (n, m))?;
+                let (Some(s_begin_wff), Some(s_end_wff)) =
+                    (s_begin.sentence_with_loc(), s_end.sentence_with_loc())
+                else {
+                    return Err(Diagnostic::new(
+                        "¬Intro requires a referenced subproof with a premise and conclusion"
+                            .to_string(),
+                        n.span.clone(),
+                    ));
+                };
+
+                if negated.value() != s_begin_wff.value() {
+                    return Err(Diagnostic::new(
+                        "the negated formula does not match the premise of the referenced subproof"
+                            .to_string(),
+                        n.span.clone(),
+                    )
+                    .with_relation(
+                        format!("subproof premise at line {}", n.line),
+                        s_begin_wff.span.clone(),
+                    ));
                 }
+
+                if *s_end_wff.value() != Wff::Bottom {
+                    return Err(Diagnostic::new(
+                        "the referenced subproof does not end in ⊥".to_string(),
+                        m.span.clone(),
+                    )
+                    .with_relation(
+                        format!("subproof conclusion at line {}", m.line),
+                        s_end_wff.span.clone(),
+                    ));
+                }
+
+                Ok(())
             }
+
             Justification::NotElim(n) => {
-                if let Wff::Not(negd_wff) = self.get_wff_at_line(curr_line_num, *n)? {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                if let Wff::Not(negd_wff) = ref_wff.value() {
                     if let Wff::Not(negd_negd_wff) = negd_wff.value() {
-                        if negd_negd_wff.value() == curr_wff {
+                        if negd_negd_wff.value() == curr_wff.value() {
                             return Ok(());
                         }
                     }
                 }
-                if let Wff::Not(negd_wff) = curr_wff {
+
+                if let Wff::Not(negd_wff) = curr_wff.value() {
                     if let Wff::Not(negd_negd_wff) = negd_wff.value() {
-                        if self.get_wff_at_line(curr_line_num, *n)? == negd_negd_wff.value() {
-                            return Err(format!("Line {curr_line_num}: ¬Elim can only be used to go from ¬¬P to P, not the other way around"));
+                        if ref_wff.value() == negd_negd_wff.value() {
+                            return Err(referenced(
+                                "¬Elim can only be used to go from ¬¬P to P, not the other way around".to_string(),
+                                n,
+                                ref_wff,
+                            ));
                         }
                     }
                 }
-                Err(format!("Line {curr_line_num}: ¬Elim is used improperly"))
+
+                Err(referenced("¬Elim is used improperly".to_string(), n, ref_wff))
             }
+
             Justification::BottomIntro(n, m) => {
-                let wff1 = self.get_wff_at_line(curr_line_num, *n)?;
-                let wff2 = self.get_wff_at_line(curr_line_num, *m)?;
-                if let Wff::Not(negd_wff) = wff2 {
-                    if wff1 == negd_wff.value() {
+                let wff1 = self.get_wff_at_line(line.line_num, n)?;
+                let wff2 = self.get_wff_at_line(line.line_num, m)?;
+
+                if let Wff::Not(negd_wff) = wff2.value() {
+                    if wff1.value() == negd_wff.value() {
                         return Ok(());
                     }
                 }
-                Err(format!(
-                    "Line {curr_line_num}: ⊥Intro: {n}, {m} is used, \
-                    but the sentence at line {m} is not the negation \
-                    of the sentence at line {n}"
-                ))
+
+                Err(here(
+                    "⊥Intro requires one referenced sentence to be the negation of the other"
+                        .to_string(),
+                )
+                .with_relation(format!("first referenced line {}", n.line), wff1.span.clone())
+                .with_relation(format!("second referenced line {}", m.line), wff2.span.clone()))
             }
+
             Justification::BottomElim(n) => {
-                if let Wff::Bottom = self.get_wff_at_line(curr_line_num, *n)? {
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                if let Wff::Bottom = ref_wff.value() {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: ⊥Elim: {n} is \
-                        used, but the sentence at line {n} is not ⊥."
+                    Err(referenced(
+                        format!("⊥Elim references line {}, but that sentence is not ⊥", n.line),
+                        n,
+                        ref_wff,
                     ))
                 }
             }
+
             Justification::EqualsIntro => {
-                if let Wff::Equals(term1, term2) = curr_wff {
+                if let Wff::Equals(term1, term2) = curr_wff.value() {
                     if term1 == term2 {
                         return Ok(());
                     }
                 }
-                Err(format!("Line {curr_line_num}: =Intro is wrongly used"))
+                Err(here("=Intro is wrongly used".to_string()))
             }
+
             Justification::EqualsElim(n, m) => {
-                let Wff::Equals(subst_old, subst_new) = self.get_wff_at_line(curr_line_num, *m)?
-                else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the rule =Elim:{n},{m} \
-                        is used, but line {m} is not of the form (term1) = (term2)"
+                let equality = self.get_wff_at_line(line.line_num, m)?;
+                let Wff::Equals(subst_old, subst_new) = equality.value() else {
+                    return Err(referenced(
+                        format!(
+                            "=Elim references line {}, but that line is not of the form term1 = term2",
+                            m.line
+                        ),
+                        m,
+                        equality,
                     ));
                 };
+                let source = self.get_wff_at_line(line.line_num, n)?;
 
                 if substitution_applied_wff_one_or_more_times(
-                    self.get_wff_at_line(curr_line_num, *n)?,
-                    curr_wff,
+                    source.value(),
+                    curr_wff.value(),
                     (subst_old, subst_new),
                 ) {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the rule =Elim:{n},{m} \
-                            is used, but is is impossible to obtain line {curr_line_num} \
-                            from line {n} by changing one or more occurrences of {} to {}",
-                        formatter::format_term(subst_old),
-                        formatter::format_term(subst_new),
-                    ))
+                    Err(
+                        here(format!(
+                            "=Elim cannot obtain this sentence from line {} by replacing one or more occurrences of {} with {}",
+                            n.line,
+                            formatter::format_term(subst_old),
+                            formatter::format_term(subst_new),
+                        ))
+                        .with_relation(
+                            format!("source sentence at line {}", n.line),
+                            source.span.clone(),
+                        )
+                        .with_relation(
+                            format!("equality at line {}", m.line),
+                            equality.span.clone(),
+                        ),
+                    )
                 }
             }
+
             Justification::ForallIntro((sb, se)) => {
-                let Wff::Forall(var, forall_curr_wff) = curr_wff else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the rule ∀Intro is used, \
-                    but the sentence at this line is not universally quantified at the top-level"
+                let Wff::Forall(var, forall_curr_wff) = curr_wff.value() else {
+                    return Err(here(
+                        "∀Intro is used, but this sentence is not universally quantified at the top level".to_string(),
                     ));
                 };
-                let (s_begin, s_end) = self.get_subproof_at_lines(curr_line_num, (*sb, *se))?;
+
+                let (s_begin, s_end) = self.get_subproof_at_lines(line.line_num, (sb, se))?;
                 let Some(boxed_const @ Term::Atomic(bc)) = s_begin.boxed_constant() else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the rule ∀Intro is used, but the \
-                        referenced subproof does not introduce a boxed constant"
+                    return Err(Diagnostic::new(
+                        "∀Intro requires a referenced subproof that introduces a boxed constant"
+                            .to_string(),
+                        sb.span.clone(),
                     ));
                 };
+
                 if s_begin.sentence().is_some() {
-                    return Err(format!(
-                            "Line {curr_line_num}: when using ∀Intro, the premise of the referenced subproof \
-                            should consist of solely a boxed constant, without a sentence"
+                    return Err(Diagnostic::new(
+                        "when using ∀Intro, the premise of the referenced subproof should contain only a boxed constant, without a sentence".to_string(),
+                        sb.span.clone(),
                     ));
                 }
 
-                let Some(sent_end) = s_end.sentence() else {
-                    // this shouldn't happen anyway...
-                    return Err(format!("Line {curr_line_num}: the rule ∀Elim:{sb}-{se} is used, but line {se} does not contain a sentence"));
+                let Some(sent_end) = s_end.sentence_with_loc() else {
+                    return Err(Diagnostic::new(
+                        format!("line {} does not contain a sentence", se.line),
+                        se.span.clone(),
+                    ));
                 };
 
                 if apply_trivial_substitution_everywhere_to_wff(
-                    forall_curr_wff,
+                    forall_curr_wff.value(),
                     (&Term::Atomic(var.to_string()), boxed_const),
-                ) != *sent_end
+                ) != *sent_end.value()
                 {
-                    return Err(format!("Line {curr_line_num}: the rule ∀Intro:{sb}-{se} is used, but if all occurrences of {var} in the quantified part of line {curr_line_num} are replaced by {bc}, one does not obtain the sentence in line {se}"));
+                    return Err(
+                        Diagnostic::new(
+                            format!(
+                                "replacing every occurrence of {var} by {bc} does not produce the sentence in line {}",
+                                se.line
+                            ),
+                            se.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof conclusion at line {}", se.line),
+                            sent_end.span.clone(),
+                        ),
+                    );
                 }
 
                 Ok(())
             }
+
             Justification::ForallElim(n) => {
-                let Wff::Forall(var, forall_ref_wff_box) =
-                    self.get_wff_at_line(curr_line_num, *n)?
-                else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the justification \
-                        ∀Elim:{n} is used, but the sentence at line {n} is not a \
-                        universally quantified sentence at the top level"
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Forall(var, forall_ref_wff_box) = ref_wff.value() else {
+                    return Err(referenced(
+                        format!(
+                            "∀Elim references line {}, but that sentence is not universally quantified at the top level",
+                            n.line
+                        ),
+                        n,
+                        ref_wff,
                     ));
                 };
-                let forall_ref_wff = (*forall_ref_wff_box).value();
+
+                let forall_ref_wff = forall_ref_wff_box.value();
                 if let Some((term1, term2)) =
-                    find_possible_trivial_substitution_wff(forall_ref_wff, curr_wff)
+                    find_possible_trivial_substitution_wff(forall_ref_wff, curr_wff.value())
                 {
-                    // if `find_possible_triviabl_substitution_wff` returns something we always need to double check
                     if apply_trivial_substitution_everywhere_to_wff(
                         forall_ref_wff,
                         (&term1, &term2),
-                    ) == *curr_wff
+                    ) == *curr_wff.value()
                         && Term::Atomic(var.to_string()) == term1
                     {
                         return if self.is_closed_term(&term2) {
                             Ok(())
                         } else {
-                            Err(format!(
-                                "Line {curr_line_num}: the rule ∀Elim:{n} is used, \
-                                 but {} is not a closed term (so you cannot substitute {}
-                                 for all occurences of {var} in line {})",
-                                formatter::format_term(&term2),
-                                formatter::format_term(&term2),
-                                *n
+                            Err(referenced(
+                                format!(
+                                    "{} is not a closed term and therefore cannot replace {var}",
+                                    formatter::format_term(&term2),
+                                ),
+                                n,
+                                ref_wff,
                             ))
                         };
                     }
                 }
-                if forall_ref_wff == curr_wff {
+
+                if forall_ref_wff == curr_wff.value() {
                     return Ok(());
                 }
-                Err(format!(
-                    "Line {curr_line_num}: the rule ∀Elim:{n} is used, but there is no \
-                    appropriate substitution between line {n} and line {curr_line_num}"
+
+                Err(referenced(
+                    format!(
+                        "there is no appropriate substitution between line {} and line {}",
+                        n.line, line.line_num
+                    ),
+                    n,
+                    ref_wff,
                 ))
             }
+
             Justification::ExistsIntro(n) => {
-                let Wff::Exists(var, exists_curr_wff_box) = curr_wff else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the justification \
-                        ∃Intro:{n} is used, but the sentence at line {curr_line_num} is not an \
-                        existentially quantified sentence at the top level"
+                let Wff::Exists(var, exists_curr_wff_box) = curr_wff.value() else {
+                    return Err(here(
+                        "∃Intro is used, but this sentence is not existentially quantified at the top level".to_string(),
                     ));
                 };
-                let exists_curr_wff = (*exists_curr_wff_box).value();
-                let ref_wff = self.get_wff_at_line(curr_line_num, *n)?;
+
+                let exists_curr_wff = exists_curr_wff_box.value();
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+
                 if let Some((term1, term2)) =
-                    find_possible_trivial_substitution_wff(exists_curr_wff, ref_wff)
+                    find_possible_trivial_substitution_wff(exists_curr_wff, ref_wff.value())
                 {
                     if substitution_applied_wff_zero_or_more_times(
                         exists_curr_wff,
-                        ref_wff,
+                        ref_wff.value(),
                         (&term1, &term2),
                     ) && Term::Atomic(var.to_string()) == term1
                     {
                         return if self.is_closed_term(&term2) {
                             Ok(())
                         } else {
-                            Err(format!(
-                                "Line {curr_line_num}: the rule ∃Intro:{n} is \
-                                used, but {} in line {} is not a closed term",
-                                formatter::format_term(&term2),
-                                *n
+                            Err(referenced(
+                                format!(
+                                    "{} in line {} is not a closed term",
+                                    formatter::format_term(&term2),
+                                    n.line,
+                                ),
+                                n,
+                                ref_wff,
                             ))
                         };
                     }
                 }
-                if exists_curr_wff == ref_wff {
+
+                if exists_curr_wff == ref_wff.value() {
                     return Ok(());
                 }
-                Err(format!(
-                    "Line {curr_line_num}: the rule ∃Intro:{n} is used, but there is no \
-                    appropriate substitution between line {n} and line {curr_line_num}"
+
+                Err(referenced(
+                    format!(
+                        "there is no appropriate substitution between line {} and line {}",
+                        n.line, line.line_num
+                    ),
+                    n,
+                    ref_wff,
                 ))
             }
+
             Justification::ExistsElim(n, (sb, se)) => {
-                let ref_wff = self.get_wff_at_line(curr_line_num, *n)?;
-                let Wff::Exists(var, exists_ref_wff_box) = ref_wff else {
-                    return Err(format!(
-                        "Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} \
-                    is used, but the sentence at line {n} ({}) is not an existentially \
-                    quantified sentence at the top-level",
-                        formatter::format_wff(ref_wff)
+                let ref_wff = self.get_wff_at_line(line.line_num, n)?;
+                let Wff::Exists(var, exists_ref_wff_box) = ref_wff.value() else {
+                    return Err(referenced(
+                        format!(
+                            "∃Elim references line {}, but that sentence ({}) is not existentially quantified at the top level",
+                            n.line,
+                            formatter::format_wff(ref_wff.value()),
+                        ),
+                        n,
+                        ref_wff,
                     ));
                 };
-                let exists_ref_wff = (*exists_ref_wff_box).value();
-                let (s_begin, s_end) = self.get_subproof_at_lines(curr_line_num, (*sb, *se))?;
+
+                let exists_ref_wff = exists_ref_wff_box.value();
+                let (s_begin, s_end) = self.get_subproof_at_lines(line.line_num, (sb, se))?;
 
                 let Some(bc_term @ Term::Atomic(bc)) = s_begin.boxed_constant() else {
-                    return Err(format!("Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} is used, but the referenced subproof does not introduce a boxed constant in line {sb}."));
+                    return Err(Diagnostic::new(
+                        "∃Elim requires a referenced subproof that introduces a boxed constant"
+                            .to_string(),
+                        sb.span.clone(),
+                    ));
                 };
 
-                let Some(sent_begin) = s_begin.sentence() else {
-                    return Err(format!("Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} is used, but line {sb} contains only a boxed constant; when using ∃Elim, it should contain both a boxed constant and a sentence"));
+                let Some(sent_begin) = s_begin.sentence_with_loc() else {
+                    return Err(Diagnostic::new(
+                        "when using ∃Elim, the first line of the subproof must contain both a boxed constant and a sentence".to_string(),
+                        sb.span.clone(),
+                    ));
+                };
+                let Some(sent_end) = s_end.sentence_with_loc() else {
+                    return Err(Diagnostic::new(
+                        format!("line {} does not contain a sentence", se.line),
+                        se.span.clone(),
+                    ));
                 };
 
-                let Some(sent_end) = s_end.sentence() else {
-                    // this shouldn't happen anyway...
-                    return Err(format!("Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} is used, but line {se} does not contain a sentence"));
-                };
-
-                if apply_trivial_substitution_everywhere_to_wff(
+                let expected = apply_trivial_substitution_everywhere_to_wff(
                     exists_ref_wff,
                     (&Term::Atomic(var.to_string()), bc_term),
-                ) == *sent_begin
-                {
-                    if sent_end == curr_wff {
+                );
+
+                if expected == *sent_begin.value() {
+                    if sent_end.value() == curr_wff.value() {
                         Ok(())
                     } else {
-                        Err(format!(
-                            "Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} \
-                        is used, but the sentence in line {se} ({}) is not the same as \
-                        the sentence in line {curr_line_num} ({})",
-                            formatter::format_wff(sent_end),
-                            formatter::format_wff(curr_wff),
+                        Err(Diagnostic::new(
+                            format!(
+                                "the sentence in line {} is not the same as the inferred sentence",
+                                se.line
+                            ),
+                            se.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof conclusion at line {}", se.line),
+                            sent_end.span.clone(),
                         ))
                     }
                 } else {
-                    Err(format!(
-                        "Line {curr_line_num}: the rule ∃Elim:{n},{sb}-{se} \
-                        is used, but if one substitutes {bc} for all free \
-                        occurences of {var} in the quantified part of the sentence \
-                        in line {n} ({}), one obtains {}, but this is not equal to the \
-                        sentence found in line {sb} ({})",
-                        formatter::format_wff(ref_wff),
-                        formatter::format_wff(&apply_trivial_substitution_everywhere_to_wff(
-                            exists_ref_wff,
-                            (&Term::Atomic(var.to_string()), bc_term)
-                        )),
-                        formatter::format_wff(sent_begin)
-                    ))
+                    Err(
+                        Diagnostic::new(
+                            format!(
+                                "substituting {bc} for every free occurrence of {var} does not produce the sentence in line {}",
+                                sb.line
+                            ),
+                            sb.span.clone(),
+                        )
+                        .with_relation(
+                            format!("existential sentence at line {}", n.line),
+                            ref_wff.span.clone(),
+                        )
+                        .with_relation(
+                            format!("subproof premise at line {}", sb.line),
+                            sent_begin.span.clone(),
+                        ),
+                    )
                 }
             }
         }

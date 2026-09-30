@@ -11,11 +11,7 @@ pub struct Location {
 
 impl Location {
     pub fn new(file: Option<String>, line: usize, column: usize) -> Self {
-        Self {
-            file,
-            line,
-            column,
-        }
+        Self { file, line, column }
     }
 
     pub fn dummy() -> Self {
@@ -28,7 +24,7 @@ impl Location {
 
     pub fn next_line(&mut self) {
         self.line += 1;
-        self.column = 0;
+        self.column = 1;
     }
 
     pub fn next_column(&mut self) {
@@ -50,46 +46,85 @@ impl fmt::Display for Location {
     }
 }
 
-/// A value paired with location metadata.
-#[derive(Debug, Clone)]
-pub struct WithLoc<T> {
-    pub value: T,
-    pub location: Location,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Span {
+    pub start: Location,
+    pub end: Location,
 }
 
-impl<T> WithLoc<T> {
-    pub fn new(value: T, location: Location) -> Self {
+impl Span {
+    pub fn new(start: Location, end: Location) -> Self {
+        Self { start, end }
+    }
+
+    pub fn point(location: Location) -> Self {
+        let mut end = location.clone();
+        end.next_column();
+
         Self {
-            value,
-            location,
+            start: location,
+            end,
         }
+    }
+
+    pub fn cover(first: &Span, last: &Span) -> Self {
+        Self {
+            start: first.start.clone(),
+            end: last.end.clone(),
+        }
+    }
+
+    pub fn dummy() -> Self {
+        Self {
+            start: Location::dummy(),
+            end: Location::dummy(),
+        }
+    }
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Span({} -> {})", self.start, self.end)
+    }
+}
+
+/// A value paired with location metadata.
+#[derive(Debug, Clone)]
+pub struct WithSpan<T> {
+    pub value: T,
+    pub span: Span,
+}
+
+impl<T> WithSpan<T> {
+    pub fn new(value: T, span: Span) -> Self {
+        Self { value, span }
     }
 
     pub fn dummy(value: T) -> Self {
         Self {
             value,
-            location: Location::dummy(),
+            span: Span::dummy(),
         }
     }
 
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WithLoc<U> {
-        WithLoc {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WithSpan<U> {
+        WithSpan {
             value: f(self.value),
-            location: self.location,
+            span: self.span,
         }
     }
 
-    pub fn map_ref<U>(&self, f: impl FnOnce(&T) -> U) -> WithLoc<U> {
-        WithLoc {
+    pub fn map_ref<U>(&self, f: impl FnOnce(&T) -> U) -> WithSpan<U> {
+        WithSpan {
             value: f(&self.value),
-            location: self.location.clone(),
+            span: self.span.clone(),
         }
     }
 
-    pub fn as_ref(&self) -> WithLoc<&T> {
-        WithLoc {
+    pub fn as_ref(&self) -> WithSpan<&T> {
+        WithSpan {
             value: &self.value,
-            location: self.location.clone(),
+            span: self.span.clone(),
         }
     }
 
@@ -97,8 +132,8 @@ impl<T> WithLoc<T> {
         self.value
     }
 
-    pub fn location(&self) -> &Location {
-        &self.location
+    pub fn span(&self) -> &Span {
+        &self.span
     }
 
     pub fn value(&self) -> &T {
@@ -110,34 +145,34 @@ impl<T> WithLoc<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for WithLoc<T> {
+impl<T: PartialEq> PartialEq for WithSpan<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
     }
 }
 
-impl<T: Eq> Eq for WithLoc<T> {}
+impl<T: Eq> Eq for WithSpan<T> {}
 
-impl<T: Default> Default for WithLoc<T> {
+impl<T: Default> Default for WithSpan<T> {
     fn default() -> Self {
         Self::dummy(T::default())
     }
 }
 
-impl<T: Hash> Hash for WithLoc<T> {
+impl<T: Hash> Hash for WithSpan<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.value.hash(state);
     }
 }
 
-impl<T: fmt::Debug> fmt::Display for WithLoc<T> {
+impl<T: fmt::Debug> fmt::Display for WithSpan<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} @ {}", self.value, self.location)
+        write!(f, "{:?} @ {}", self.value, self.span)
     }
 }
 
 // the following two methoCs allow us to coerce &WithLoc<T> into &T for convenience
-impl<T> std::ops::Deref for WithLoc<T> {
+impl<T> std::ops::Deref for WithSpan<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -145,7 +180,7 @@ impl<T> std::ops::Deref for WithLoc<T> {
     }
 }
 
-impl<T> std::ops::DerefMut for WithLoc<T> {
+impl<T> std::ops::DerefMut for WithSpan<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }

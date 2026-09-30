@@ -1,24 +1,25 @@
-use crate::loc::{Location, WithLoc};
+use crate::loc::{Span, WithSpan};
 
-pub type LProofNode = WithLoc<ProofNode>;
-pub type LWff = WithLoc<Wff>;
-pub type LTerm = WithLoc<Term>;
-pub type LJustification = WithLoc<Justification>;
+pub type LProofNode = WithSpan<ProofNode>;
+pub type LParsedProofNode = WithSpan<ParsedProofNode>;
+pub type LWff = WithSpan<Wff>;
+pub type LTerm = WithSpan<Term>;
+pub type LJustification = WithSpan<Justification>;
 
 // Temp code for plugging in type errors
 #[allow(dead_code)]
 pub fn dummy_lwff(wff: Wff) -> LWff {
-    WithLoc::dummy(wff)
+    WithSpan::dummy(wff)
 }
 
 #[allow(dead_code)]
 pub fn dummy_lterm(term: Term) -> LTerm {
-    WithLoc::dummy(term)
+    WithSpan::dummy(term)
 }
 
 #[allow(dead_code)]
 pub fn dummy_ljustification(just: Justification) -> LJustification {
-    WithLoc::dummy(just)
+    WithSpan::dummy(just)
 }
 
 #[allow(dead_code)]
@@ -103,6 +104,89 @@ impl ProofNode {
     }
 }
 
+/// A `ProofNode` represents every relevant element of a Fitch-style proof in document order.
+///
+/// Roughly, it correponds to either a physical line in a text-based
+/// proof, or it represens opening/closing a new subproof.
+#[derive(PartialEq, Debug, Clone)]
+pub enum ParsedProofNode {
+    /// A numbered line (premise or inference). These are the only nodes that carry a line number.
+    Numbered(ParsedNumberedLine),
+    /// A Fitch bar line (`| ---`) separating premises from a subproof body or the initial derivation.
+    FitchBar {
+        depth: usize,
+    },
+    /// An empty line that contains only scope markers (vertical bars). These are rare but allowed.
+    Empty {
+        depth: usize,
+    },
+    /// Synthetic element inserted when a new subproof scope is opened. It immediately precedes the
+    /// numbered line that serves as the subproof premise.
+    SubproofOpen {
+        depth: usize,
+    },
+    /// Synthetic element inserted when one or more subproof scopes close. It precedes the next
+    /// textual node at the shallower depth.
+    SubproofClose {
+        depth: usize,
+    },
+}
+
+impl ParsedProofNode {
+    pub fn depth(&self) -> usize {
+        match self {
+            ParsedProofNode::Numbered(line) => line.depth,
+            ParsedProofNode::FitchBar {
+                depth,
+            }
+            | ParsedProofNode::Empty {
+                depth,
+            }
+            | ParsedProofNode::SubproofOpen {
+                depth,
+            }
+            | ParsedProofNode::SubproofClose {
+                depth,
+            } => *depth,
+        }
+    }
+
+    pub fn as_numbered(&self) -> Option<&ParsedNumberedLine> {
+        if let ParsedProofNode::Numbered(line) = self {
+            Some(line)
+        } else {
+            None
+        }
+    }
+
+    pub fn line_num(&self) -> Option<&WithSpan<LineNumber>> {
+        return self.as_numbered().map(|s| &s.line_num);
+    }
+
+    pub fn is_fitch_bar(&self) -> bool {
+        matches!(self, ParsedProofNode::FitchBar { .. })
+    }
+
+    pub fn is_structural(&self) -> bool {
+        matches!(self, ParsedProofNode::SubproofOpen { .. } | ParsedProofNode::SubproofClose { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineNumber {
+    Explicit(usize),
+    Auto,
+}
+
+impl std::fmt::Display for LineNumber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LineNumber::Explicit(nr) => nr.fmt(f),
+            LineNumber::Auto => f.write_str("."),
+        }
+    }
+}
+
 /// Numbered proof lines carry the logical content of the user's proof.
 ///
 /// A numbered line may be a premise (no justification), an inference
@@ -120,12 +204,29 @@ pub struct NumberedLine {
     pub boxed_constant: Option<LTerm>,
 }
 
+/// Numbered proof lines carry the logical content of the user's proof.
+///
+/// A numbered line may be a premise (no justification), an inference
+/// (justification present), or a placeholder line where the user has
+/// not yet written the justification -- we want to be able to deal
+/// with those since we want to provide feedback on imcomplete proofs.
+/// Additionaly, when a boxed constant is introduced, it is stored in
+/// `boxed_constant`.
 #[derive(PartialEq, Debug, Clone)]
+pub struct ParsedNumberedLine {
+    pub line_num: WithSpan<LineNumber>,
+    pub depth: usize,
+    pub sentence: Option<LWff>,
+    pub justification: Option<LJustification>,
+    pub boxed_constant: Option<LTerm>,
+}
+
 /// A logical sentence. "Wff" stands for "well-formed formula", but this is a slightly incorrect
 /// name, since for example, a logical sentence that has predicate ariy mismatches is still
 /// expressable in this [Wff]. A [Wff] is a core element of a proof. For example, each proof line
 /// that has a line number, will contain a [Wff] (unless it is a line which only introduces a boxed
 /// constant).
+#[derive(PartialEq, Debug, Clone)]
 pub enum Wff {
     /// Conjunction.
     And(Vec<LWff>),
@@ -171,29 +272,41 @@ pub enum Term {
     FuncApp(String, Vec<LTerm>),
 }
 
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+pub struct LineRef {
+    pub line: usize,
+    pub span: Span,
+}
+
+impl std::fmt::Display for LineRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.line)
+    }
+}
+
 /// This enum represents the justification rules for an inference. The associated [usize]s denote
 /// the line numbers being represented.
 #[derive(PartialEq, Debug, Clone)]
 pub enum Justification {
-    AndIntro(Vec<usize>),
-    AndElim(usize),
-    OrIntro(usize),
-    OrElim(usize, Vec<(usize, usize)>),
-    NotIntro((usize, usize)),
-    NotElim(usize),
-    BottomIntro(usize, usize),
-    BottomElim(usize),
-    ImpliesIntro((usize, usize)),
-    ImpliesElim(usize, usize),
-    BicondIntro((usize, usize), (usize, usize)),
-    BicondElim(usize, usize),
+    AndIntro(Vec<LineRef>),
+    AndElim(LineRef),
+    OrIntro(LineRef),
+    OrElim(LineRef, Vec<(LineRef, LineRef)>),
+    NotIntro((LineRef, LineRef)),
+    NotElim(LineRef),
+    BottomIntro(LineRef, LineRef),
+    BottomElim(LineRef),
+    ImpliesIntro((LineRef, LineRef)),
+    ImpliesElim(LineRef, LineRef),
+    BicondIntro((LineRef, LineRef), (LineRef, LineRef)),
+    BicondElim(LineRef, LineRef),
     EqualsIntro,
-    EqualsElim(usize, usize),
-    ForallIntro((usize, usize)),
-    ForallElim(usize),
-    ExistsIntro(usize),
-    ExistsElim(usize, (usize, usize)),
-    Reit(usize),
+    EqualsElim(LineRef, LineRef),
+    ForallIntro((LineRef, LineRef)),
+    ForallElim(LineRef),
+    ExistsIntro(LineRef),
+    ExistsElim(LineRef, (LineRef, LineRef)),
+    Reit(LineRef),
 }
 
 impl NumberedLine {
@@ -229,16 +342,16 @@ impl NumberedLine {
         self.boxed_constant.as_ref()
     }
 
-    pub fn sentence_loc(&self) -> Option<&Location> {
-        self.sentence.as_ref().map(|w| w.location())
+    pub fn sentence_span(&self) -> Option<Span> {
+        self.sentence.as_ref().map(|w| w.span().clone())
     }
 
-    pub fn justification_loc(&self) -> Option<&Location> {
-        self.justification.as_ref().map(|j| j.location())
+    pub fn justification_span(&self) -> Option<Span> {
+        self.justification.as_ref().map(|j| j.span().clone())
     }
 
-    pub fn boxed_constant_loc(&self) -> Option<&Location> {
-        self.boxed_constant.as_ref().map(|t| t.location())
+    pub fn boxed_constant_span(&self) -> Option<Span> {
+        self.boxed_constant.as_ref().map(|t| t.span().clone())
     }
 
     pub fn sentence_owned(&self) -> Option<Wff> {
@@ -281,9 +394,16 @@ impl Justification {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticRelation {
+    pub message: String,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub message: String,
-    pub location: Option<Location>,
+    pub span: Span,
+    pub related: Vec<DiagnosticRelation>,
 }
 
 impl AsRef<str> for Diagnostic {
@@ -293,19 +413,43 @@ impl AsRef<str> for Diagnostic {
 }
 
 impl Diagnostic {
-    pub fn format(self : &Diagnostic) -> String {
-        match &self.location  {
-            None => self.message.clone(),
-            Some(loc) =>
-                format!("line {}:{}: {}", loc.line, loc.column, self.message)
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            related: Vec::new(),
         }
+    }
+
+    pub fn format(self: &Diagnostic) -> String {
+        let Span {
+            start,
+            end,
+        } = &self.span;
+
+        format!(
+            "{}:{}:{}-{}: {}",
+            start.file.clone().unwrap_or("??".to_string()),
+            start.line,
+            start.column,
+            end.column,
+            self.message
+        )
+    }
+
+    pub fn with_relation(mut self, message: impl Into<String>, span: Span) -> Self {
+        self.related.push(DiagnosticRelation {
+            message: message.into(),
+            span,
+        });
+        self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProofResult {
     /// No mistakes; proof is correct.
-    Correct,
+    Correct(Span),
     /// An 'error' is a mistake that makes the proof wrong, but still allows
     /// the checker to go on and find other mistakes. This [ProofResult::Error]
     /// variant denotes the list of errors that was obtained during analysis.
