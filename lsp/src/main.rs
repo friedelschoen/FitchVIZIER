@@ -191,7 +191,10 @@ impl LanguageServer for Backend {
             .get(&params.text_document.uri)
             .iter()
             .map(|document| {
-                fitch_proof::check_proof_diagnostics(&document.text, fitch_proof::DEFAULT_ALLOWED_VARIABLE_NAMES)
+                fitch_proof::check_proof_diagnostics(
+                    &document.text,
+                    fitch_proof::DEFAULT_ALLOWED_VARIABLE_NAMES,
+                )
             })
             .flat_map(|d| diagnostic_to_lsp(&params.text_document.uri, d))
             .collect();

@@ -11,7 +11,11 @@ pub struct Location {
 
 impl Location {
     pub fn new(file: Option<String>, line: usize, column: usize) -> Self {
-        Self { file, line, column }
+        Self {
+            file,
+            line,
+            column,
+        }
     }
 
     pub fn dummy() -> Self {
@@ -54,7 +58,10 @@ pub struct Span {
 
 impl Span {
     pub fn new(start: Location, end: Location) -> Self {
-        Self { start, end }
+        Self {
+            start,
+            end,
+        }
     }
 
     pub fn point(location: Location) -> Self {
@@ -97,7 +104,10 @@ pub struct WithSpan<T> {
 
 impl<T> WithSpan<T> {
     pub fn new(value: T, span: Span) -> Self {
-        Self { value, span }
+        Self {
+            value,
+            span,
+        }
     }
 
     pub fn dummy(value: T) -> Self {
